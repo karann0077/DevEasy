@@ -205,7 +205,6 @@ export default function CanvasPage() {
               {/* Nodes */}
               {NODES.map((node) => {
                 const isSelected = selected?.id === node.id;
-                const Icon = node.icon;
                 return (
                   <g
                     key={node.id}
@@ -222,6 +221,15 @@ export default function CanvasPage() {
                       fill={isSelected ? node.color + "25" : "rgba(15,23,42,0.9)"}
                       stroke={isSelected ? node.color : node.color + "60"}
                       strokeWidth={isSelected ? 2 : 1.5}
+                    />
+                    {/* Colored left border accent */}
+                    <rect
+                      x={node.x}
+                      y={node.y + 4}
+                      width={4}
+                      height={48}
+                      rx={2}
+                      fill={node.color}
                     />
                     <text
                       x={node.x + 70}
@@ -265,7 +273,7 @@ export default function CanvasPage() {
 
           {/* Info Panel */}
           {selected ? (
-            <div className="w-80 glass rounded-2xl border border-slate-700 p-5 relative animate-in slide-in-from-right duration-200">
+            <div className="w-80 backdrop-blur-xl bg-slate-900/80 border border-slate-700/50 rounded-2xl p-5 relative">
               <button
                 onClick={() => setSelected(null)}
                 className="absolute top-4 right-4 text-slate-500 hover:text-white transition-colors"

@@ -1,28 +1,19 @@
 "use client";
 import { useState, useRef, useEffect } from "react";
 import {
-  Terminal,
+  Search,
   Play,
-  Github,
   CheckCircle,
-  XCircle,
   Loader2,
-  Database,
-  Zap,
+  AlertTriangle,
+  FileText,
 } from "lucide-react";
-
-const EXAMPLE_REPOS = [
-  "https://github.com/tiangolo/fastapi",
-  "https://github.com/pallets/flask",
-  "https://github.com/vercel/next.js",
-];
 
 export default function IngestPage() {
   const [repoUrl, setRepoUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
-  const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
-  const [chunksIngested, setChunksIngested] = useState(0);
+  const [started, setStarted] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -33,10 +24,8 @@ export default function IngestPage() {
     if (!repoUrl.trim()) return;
     setLoading(true);
     setLogs([]);
-    setStatus("idle");
-    setChunksIngested(0);
+    setStarted(true);
 
-    // Simulated step messages while waiting
     const simulatedSteps = [
       "🔗 Connecting to GitHub API...",
       "⬇️  Downloading repository zip...",
@@ -67,19 +56,15 @@ export default function IngestPage() {
         const err = await resp.json();
         const errLogs: string[] = err?.detail?.logs || [`❌ Error: ${err?.detail || resp.statusText}`];
         setLogs(errLogs);
-        setStatus("error");
         return;
       }
 
       const data = await resp.json();
       setLogs(data.logs || ["✅ Ingestion completed."]);
-      setChunksIngested(data.chunks_ingested || 0);
-      setStatus("success");
     } catch (e: unknown) {
       clearInterval(stepInterval);
       const msg = e instanceof Error ? e.message : String(e);
       setLogs((prev) => [...prev, `❌ Network error: ${msg}`]);
-      setStatus("error");
     } finally {
       setLoading(false);
     }
@@ -90,82 +75,81 @@ export default function IngestPage() {
       <div className="max-w-4xl mx-auto">
         {/* Header */}
         <div className="mb-8">
-          <div className="flex items-center gap-3 mb-3">
-            <div className="p-2 rounded-lg bg-cyan-500/10">
-              <Terminal size={24} className="text-cyan-400" />
-            </div>
-            <h1 className="text-3xl font-black text-white">
-              Zero-Setup Codebase Ingestion
-            </h1>
-          </div>
-          <p className="text-slate-400 ml-14">
-            Transform any public GitHub repository into an AI-searchable memory bank in minutes.
+          <h1 className="text-3xl font-black text-white mb-2">Repository Ingestion</h1>
+          <p className="text-slate-400">
+            Connect a codebase to map architecture, generate docs, and analyze complexity.
           </p>
         </div>
 
-        {/* Input Card */}
-        <div className="glass rounded-2xl p-6 mb-6 border border-slate-800">
-          <label className="block text-slate-300 font-semibold mb-3 flex items-center gap-2">
-            <Github size={16} className="text-slate-400" />
-            GitHub Repository URL
+        {/* Input Row */}
+        <div className="mb-6">
+          <label className="block text-slate-300 font-medium mb-2 text-sm">
+            Target Repository URL
           </label>
           <div className="flex gap-3">
-            <input
-              type="url"
-              value={repoUrl}
-              onChange={(e) => setRepoUrl(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && !loading && handleIngest()}
-              placeholder="https://github.com/owner/repository"
-              className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500/60 focus:shadow-cyan-glow transition-all"
-              disabled={loading}
-            />
+            <div className="relative flex-1">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+              <input
+                type="url"
+                value={repoUrl}
+                onChange={(e) => setRepoUrl(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !loading && handleIngest()}
+                placeholder="https://github.com/innovatebharat/demo-core-api"
+                className="w-full bg-slate-900/50 border border-slate-800 rounded-xl pl-9 pr-4 py-3 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500/60 transition-all"
+                disabled={loading}
+              />
+            </div>
             <button
               onClick={handleIngest}
               disabled={loading || !repoUrl.trim()}
-              className="flex items-center gap-2 px-6 py-3 rounded-lg bg-gradient-to-r from-cyan-500 to-indigo-600 text-white font-semibold hover:from-cyan-400 hover:to-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-cyan-glow"
+              className="flex items-center gap-2 px-5 py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-white font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             >
               {loading ? (
-                <Loader2 size={18} className="animate-spin" />
+                <Loader2 size={16} className="animate-spin" />
               ) : (
-                <Play size={18} />
+                <Play size={16} />
               )}
-              {loading ? "Ingesting..." : "Start Ingestion"}
+              {loading ? "Ingesting..." : "Ingest Codebase"}
             </button>
-          </div>
-
-          {/* Example repos */}
-          <div className="mt-3 flex flex-wrap gap-2">
-            <span className="text-slate-500 text-xs py-1">Quick examples:</span>
-            {EXAMPLE_REPOS.map((url) => (
-              <button
-                key={url}
-                onClick={() => setRepoUrl(url)}
-                className="text-xs px-2 py-1 rounded bg-slate-800 text-slate-400 hover:text-cyan-400 hover:bg-slate-700 transition-colors"
-              >
-                {url.replace("https://github.com/", "")}
-              </button>
-            ))}
           </div>
         </div>
 
-        {/* Pipeline Info */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-          {[
-            { label: "Chunk Size", value: "1,200 tokens" },
-            { label: "Overlap", value: "200 tokens" },
-            { label: "Embed Dim", value: "768-dim" },
-            { label: "Batch Size", value: "100 vectors" },
-          ].map(({ label, value }) => (
-            <div key={label} className="bg-slate-900/50 border border-slate-800 rounded-lg p-3 text-center">
-              <div className="text-cyan-400 font-bold text-sm">{value}</div>
-              <div className="text-slate-500 text-xs mt-1">{label}</div>
+        {/* Metric Cards */}
+        <div className="grid grid-cols-3 gap-4 mb-6">
+          {/* Architecture Health */}
+          <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <CheckCircle size={18} className="text-emerald-400" />
+              <span className="text-slate-400 text-sm font-medium">Architecture Health</span>
             </div>
-          ))}
+            <div className="text-white font-bold text-lg mb-1">Optimal</div>
+            <div className="text-slate-500 text-xs">No cyclical dependencies detected</div>
+          </div>
+
+          {/* Optimization Hints */}
+          <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <AlertTriangle size={18} className="text-amber-400" />
+              <span className="text-slate-400 text-sm font-medium">Optimization Hints</span>
+            </div>
+            <div className="text-white font-bold text-lg mb-1">4 Issues</div>
+            <div className="text-slate-500 text-xs">Found 2 instances of O(N²) loops</div>
+          </div>
+
+          {/* Documentation */}
+          <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <FileText size={18} className="text-blue-400" />
+              <span className="text-slate-400 text-sm font-medium">Documentation</span>
+            </div>
+            <div className="text-white font-bold text-lg mb-1">85% Sync</div>
+            <div className="text-slate-500 text-xs">3 files need docstring updates</div>
+          </div>
         </div>
 
         {/* Terminal Log Window */}
-        {(logs.length > 0 || loading) && (
-          <div className="glass rounded-2xl border border-slate-800 overflow-hidden">
+        {(started || loading) && (
+          <div className="bg-slate-900/50 border border-slate-800 rounded-xl overflow-hidden">
             {/* Terminal header */}
             <div className="flex items-center gap-2 px-4 py-3 bg-slate-900/80 border-b border-slate-800">
               <div className="w-3 h-3 rounded-full bg-red-500/80" />
@@ -208,68 +192,6 @@ export default function IngestPage() {
             </div>
           </div>
         )}
-
-        {/* Result Banner */}
-        {status === "success" && (
-          <div className="mt-6 flex items-center gap-4 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
-            <CheckCircle size={24} className="text-emerald-400 shrink-0" />
-            <div>
-              <div className="text-emerald-400 font-bold">Ingestion Complete!</div>
-              <div className="text-slate-400 text-sm mt-0.5">
-                <span className="text-white font-semibold">{chunksIngested.toLocaleString()}</span> code
-                chunks vectorized and stored in Pinecone. Ready for RAG queries.
-              </div>
-            </div>
-            <Database size={20} className="text-emerald-500 ml-auto" />
-          </div>
-        )}
-
-        {status === "error" && (
-          <div className="mt-6 flex items-center gap-4 p-4 rounded-xl bg-red-500/10 border border-red-500/30">
-            <XCircle size={24} className="text-red-400 shrink-0" />
-            <div>
-              <div className="text-red-400 font-bold">Ingestion Failed</div>
-              <div className="text-slate-400 text-sm mt-0.5">
-                Check the logs above for details. Ensure your API keys are configured.
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* How it works */}
-        <div className="mt-8 glass rounded-2xl p-6 border border-slate-800">
-          <h3 className="text-white font-bold mb-4 flex items-center gap-2">
-            <Zap size={16} className="text-cyan-400" />
-            How the Pipeline Works
-          </h3>
-          <div className="grid md:grid-cols-3 gap-4 text-sm">
-            {[
-              {
-                step: "1",
-                title: "Download & Extract",
-                desc: "Fetches repo via GitHub Zipball API. Filters for .py, .js, .ts, .jsx, .tsx, .cpp, .md, and more.",
-              },
-              {
-                step: "2",
-                title: "Chunk & Embed",
-                desc: "RecursiveCharacterTextSplitter creates semantic chunks. Gemini text-embedding-004 generates 768-dim vectors.",
-              },
-              {
-                step: "3",
-                title: "Store in Pinecone",
-                desc: "Vectors upserted in batches of 100 to Pinecone Serverless (AWS us-east-1, cosine metric).",
-              },
-            ].map(({ step, title, desc }) => (
-              <div key={step} className="bg-slate-900/50 rounded-xl p-4">
-                <div className="w-8 h-8 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center font-bold text-sm mb-3">
-                  {step}
-                </div>
-                <div className="text-white font-semibold mb-1">{title}</div>
-                <div className="text-slate-400">{desc}</div>
-              </div>
-            ))}
-          </div>
-        </div>
       </div>
     </div>
   );

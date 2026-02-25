@@ -1,84 +1,31 @@
 "use client";
 import { useState } from "react";
-import {
-  Search,
-  FileCode,
-  ChevronRight,
-  Loader2,
-  Sparkles,
-  X,
-  FolderOpen,
-} from "lucide-react";
+import { MessageSquare, Loader2, X } from "lucide-react";
 
-const FILE_TREE = [
-  { path: "backend/main.py", type: "py" },
-  { path: "backend/requirements.txt", type: "txt" },
-  { path: "frontend/app/layout.tsx", type: "tsx" },
-  { path: "frontend/app/page.tsx", type: "tsx" },
-  { path: "frontend/app/ingest/page.tsx", type: "tsx" },
-  { path: "frontend/app/canvas/page.tsx", type: "tsx" },
-  { path: "frontend/app/explorer/page.tsx", type: "tsx" },
-  { path: "frontend/app/debugger/page.tsx", type: "tsx" },
-  { path: "frontend/components/Sidebar.tsx", type: "tsx" },
-  { path: "frontend/lib/api.ts", type: "ts" },
+const CODE_LINES = [
+  { n: 1,  text: "def process_user_data(user_records):",                       color: "text-blue-400" },
+  { n: 2,  text: '    # AI Note: Function processes batch analytics',           color: "text-slate-500" },
+  { n: 3,  text: "    results = []",                                            color: "text-slate-300" },
+  { n: 4,  text: "    for user in user_records:",                               color: "text-slate-300", annotation: true },
+  { n: 5,  text: "        for transaction in get_all_transactions():",          color: "text-slate-300", highlight: true },
+  { n: 6,  text: "            if transaction.user_id == user.id:",              color: "text-slate-300", highlight: true },
+  { n: 7,  text: "                results.append(analyze(transaction))",        color: "text-slate-300", highlight: true },
+  { n: 8,  text: "",                                                             color: "text-slate-300", highlight: true },
+  { n: 9,  text: "    return results",                                          color: "text-slate-300" },
+  { n: 10, text: "",                                                             color: "text-slate-300" },
+  { n: 11, text: "def get_all_transactions():",                                 color: "text-blue-400" },
+  { n: 12, text: '    """Fetch all transactions from database."""',             color: "text-emerald-400" },
+  { n: 13, text: "    return db.query(Transaction).all()",                      color: "text-slate-300" },
+  { n: 14, text: "",                                                             color: "text-slate-300" },
+  { n: 15, text: "def analyze(transaction):",                                   color: "text-blue-400" },
+  { n: 16, text: '    """Run analytics on a single transaction."""',            color: "text-emerald-400" },
+  { n: 17, text: "    score = compute_risk_score(transaction.amount)",          color: "text-slate-300" },
+  { n: 18, text: "    category = classify_transaction(transaction.type)",       color: "text-slate-300" },
+  { n: 19, text: "    return { 'score': score, 'category': category }",         color: "text-slate-300" },
+  { n: 20, text: "",                                                             color: "text-slate-300" },
 ];
 
-const MOCK_CODE: Record<string, string> = {
-  "backend/main.py": `from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pinecone import Pinecone, ServerlessSpec
-import requests
-
-app = FastAPI(title="InnovateBHARAT AI Engine")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@app.post("/api/ingest")
-async def ingest_repo(req: IngestRequest):
-    """Ingest a GitHub repo into Pinecone."""
-    owner, repo = parse_github_url(req.repo_url)
-    zip_bytes = download_repo_zip(owner, repo)
-    files = extract_code_files(zip_bytes, f"{owner}/{repo}")
-    # ... chunk, embed, upsert
-    return {"status": "success", "chunks": len(files)}`,
-  "frontend/components/Sidebar.tsx": `"use client";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Terminal, Map, Search, GitBranch, Home } from "lucide-react";
-
-const navItems = [
-  { href: "/", label: "Home", icon: Home },
-  { href: "/ingest", label: "Ingest", icon: Terminal },
-  { href: "/canvas", label: "Canvas", icon: Map },
-  { href: "/explorer", label: "Explorer", icon: Search },
-  { href: "/debugger", label: "Debugger", icon: GitBranch },
-];
-
-export default function Sidebar() {
-  const path = usePathname();
-  return (
-    <aside className="w-16 bg-slate-950 border-r border-slate-800 flex flex-col items-center py-4 gap-2">
-      {navItems.map(({ href, label, icon: Icon }) => (
-        <Link key={href} href={href} title={label}
-          className={\`p-3 rounded-xl transition-all \${
-            path === href ? "bg-cyan-500/20 text-cyan-400" : "text-slate-500 hover:text-slate-300"
-          }\`}>
-          <Icon size={20} />
-        </Link>
-      ))}
-    </aside>
-  );
-}`,
-};
-
-const DEFAULT_CODE = `// Select a file from the tree to view its content.
-// Use "Explain with RAG" to get AI-powered architectural insights.`;
+const MOCK_CODE_TEXT = CODE_LINES.map((l) => l.text).join("\n");
 
 function renderMarkdown(text: string): string {
   return text
@@ -88,27 +35,15 @@ function renderMarkdown(text: string): string {
     .replace(/\*\*(.+?)\*\*/g, '<strong class="text-white font-semibold">$1</strong>')
     .replace(/`([^`]+)`/g, '<code class="bg-slate-800 text-cyan-300 px-1.5 py-0.5 rounded text-xs">$1</code>')
     .replace(/^- (.+)$/gm, '<li class="ml-4 list-disc text-slate-300 mb-1">$1</li>')
-    .replace(/\n\n/g, '</p><p class="mb-2 text-slate-300 text-sm leading-relaxed">')
-    .replace(/⚠️/g, '<span class="text-yellow-400">⚠️</span>')
-    .replace(/✅/g, '<span class="text-emerald-400">✅</span>')
-    .replace(/💡/g, '<span class="text-cyan-400">💡</span>')
-    .replace(/🔗/g, '<span class="text-indigo-400">🔗</span>');
+    .replace(/\n\n/g, '</p><p class="mb-2 text-slate-300 text-sm leading-relaxed">');
 }
 
 export default function ExplorerPage() {
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
   const [explanation, setExplanation] = useState("");
-  const [sources, setSources] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
 
-  const code = selectedFile
-    ? MOCK_CODE[selectedFile] || `// Content for ${selectedFile}\n// (Not mocked in demo)`
-    : DEFAULT_CODE;
-
   const handleExplain = async () => {
-    const q = query.trim() || (selectedFile ? `Explain the file ${selectedFile}` : "Explain the codebase architecture");
     setLoading(true);
     setPanelOpen(true);
     setExplanation("");
@@ -117,15 +52,14 @@ export default function ExplorerPage() {
       const resp = await fetch("/api/explain", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: q }),
+        body: JSON.stringify({ query: "Explain this code", code: MOCK_CODE_TEXT }),
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.detail || "API error");
       setExplanation(data.answer);
-      setSources(data.sources || []);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      setExplanation(`**Error:** ${msg}\n\nMake sure you've ingested a repository first and the backend is running.`);
+      setExplanation(`**Error:** ${msg}`);
     } finally {
       setLoading(false);
     }
@@ -133,93 +67,65 @@ export default function ExplorerPage() {
 
   return (
     <div className="min-h-screen bg-[#020617] p-8">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="mb-6">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="p-2 rounded-lg bg-violet-500/10">
-              <Search size={24} className="text-violet-400" />
-            </div>
-            <h1 className="text-3xl font-black text-white">RAG Code Explorer</h1>
+      <div className="max-w-5xl mx-auto">
+        {/* Top bar */}
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2 bg-slate-900/50 border border-slate-800 rounded-lg px-3 py-2">
+            <span className="text-cyan-400 font-mono font-bold text-sm">&lt;&gt;</span>
+            <span className="text-slate-300 text-sm font-medium">data_processor.py</span>
           </div>
-          <p className="text-slate-400 ml-14">
-            System-aware code explanations powered by Gemini + Pinecone RAG.
-          </p>
-        </div>
-
-        {/* Query Bar */}
-        <div className="glass rounded-xl border border-slate-800 p-4 mb-6 flex gap-3 items-center">
-          <Search size={18} className="text-slate-500 shrink-0" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleExplain()}
-            placeholder='Ask anything... e.g. "Explain the ingestion pipeline" or "What does the API router do?"'
-            className="flex-1 bg-transparent text-slate-200 placeholder-slate-500 focus:outline-none text-sm"
-          />
           <button
             onClick={handleExplain}
             disabled={loading}
-            className="flex items-center gap-2 px-5 py-2 rounded-lg bg-gradient-to-r from-violet-500 to-indigo-600 text-white text-sm font-semibold hover:from-violet-400 hover:to-indigo-500 disabled:opacity-50 transition-all"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-sm font-medium transition-all disabled:opacity-50"
           >
             {loading ? (
               <Loader2 size={15} className="animate-spin" />
             ) : (
-              <Sparkles size={15} />
+              <MessageSquare size={15} className="text-slate-400" />
             )}
-            Explain with RAG
+            Explain Code
           </button>
         </div>
 
-        <div className="flex gap-4 h-[calc(100vh-320px)] min-h-[400px]">
-          {/* File Tree */}
-          <div className="w-52 glass rounded-xl border border-slate-800 p-3 overflow-y-auto shrink-0">
-            <div className="flex items-center gap-2 text-slate-400 text-xs font-semibold uppercase tracking-wider mb-3 px-2">
-              <FolderOpen size={13} />
-              Files
-            </div>
-            {FILE_TREE.map(({ path, type }) => (
-              <button
-                key={path}
-                onClick={() => setSelectedFile(path)}
-                className={`w-full text-left flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs mb-0.5 transition-all ${
-                  selectedFile === path
-                    ? "bg-violet-500/20 text-violet-300"
-                    : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-                }`}
-              >
-                <FileCode size={12} className="shrink-0" />
-                <span className="truncate">{path.split("/").pop()}</span>
-                <span className="ml-auto text-slate-600 text-[10px]">.{type}</span>
-              </button>
-            ))}
-          </div>
+        <div className="flex gap-4">
+          {/* Code viewer */}
+          <div className="flex-1 bg-[#0f172a] border border-slate-800 rounded-xl overflow-hidden">
+            <div className="overflow-auto">
+              {CODE_LINES.map((line) => (
+                <div
+                  key={line.n}
+                  className={`flex items-start relative ${
+                    line.highlight ? "bg-slate-800/30" : ""
+                  }`}
+                >
+                  {/* Line number */}
+                  <span className="select-none text-slate-600 font-mono text-xs w-10 shrink-0 text-right pr-4 py-1 leading-6">
+                    {line.n}
+                  </span>
 
-          {/* Code Viewer */}
-          <div className="flex-1 glass rounded-xl border border-slate-800 overflow-hidden flex flex-col">
-            {/* Tabs */}
-            <div className="flex items-center gap-0 bg-slate-900/80 border-b border-slate-800 px-3 pt-2">
-              {selectedFile && (
-                <div className="flex items-center gap-2 px-3 py-2 bg-slate-800 rounded-t-lg text-sm text-cyan-400 border-t border-l border-r border-slate-700">
-                  <FileCode size={13} />
-                  {selectedFile.split("/").pop()}
-                  <ChevronRight size={12} className="text-slate-500" />
+                  {/* Code content */}
+                  <span className={`font-mono text-xs py-1 leading-6 flex-1 pr-4 ${line.color}`}>
+                    {line.text || "\u00a0"}
+                  </span>
+
+                  {/* Inline annotation badge on line 4 */}
+                  {line.annotation && (
+                    <span className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-1 bg-amber-500/20 border border-amber-500/40 text-amber-300 text-[10px] font-medium px-2 py-0.5 rounded-full cursor-pointer hover:bg-amber-500/30 transition-colors whitespace-nowrap">
+                      ⚡ Complexity: O(N²) — Click to optimize
+                    </span>
+                  )}
                 </div>
-              )}
-            </div>
-
-            {/* Code */}
-            <div className="flex-1 overflow-auto p-4 font-mono text-sm bg-slate-950/70">
-              <pre className="text-slate-300 leading-relaxed whitespace-pre-wrap">{code}</pre>
+              ))}
             </div>
           </div>
 
           {/* AI Explanation Panel */}
           {panelOpen && (
-            <div className="w-96 glass rounded-xl border border-violet-500/30 overflow-hidden flex flex-col shrink-0">
-              <div className="flex items-center justify-between px-4 py-3 bg-slate-900/80 border-b border-slate-800">
-                <div className="flex items-center gap-2 text-violet-400 font-semibold text-sm">
-                  <Sparkles size={15} />
+            <div className="w-80 shrink-0 backdrop-blur-xl bg-slate-900/80 border border-slate-700/50 rounded-xl overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700/50">
+                <div className="flex items-center gap-2 text-slate-300 font-semibold text-sm">
+                  <MessageSquare size={15} className="text-cyan-400" />
                   AI Explanation
                 </div>
                 <button
@@ -232,32 +138,15 @@ export default function ExplorerPage() {
 
               <div className="flex-1 overflow-y-auto p-4">
                 {loading ? (
-                  <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-500">
-                    <Loader2 size={28} className="animate-spin text-violet-400" />
-                    <p className="text-sm">Querying Pinecone + Gemini...</p>
+                  <div className="flex flex-col items-center justify-center h-32 gap-3 text-slate-500">
+                    <Loader2 size={24} className="animate-spin text-cyan-400" />
+                    <p className="text-sm">Analyzing code...</p>
                   </div>
                 ) : (
-                  <div className="prose-dark text-sm">
-                    <div
-                      dangerouslySetInnerHTML={{ __html: renderMarkdown(explanation) }}
-                    />
-                    {sources.length > 0 && (
-                      <div className="mt-4 pt-4 border-t border-slate-800">
-                        <div className="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-2">
-                          RAG Sources
-                        </div>
-                        {sources.slice(0, 5).map((s, i) => (
-                          <div
-                            key={i}
-                            className="flex items-center gap-2 text-xs text-slate-400 mb-1"
-                          >
-                            <FileCode size={11} className="text-violet-400 shrink-0" />
-                            <span className="truncate">{s}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  <div
+                    className="prose-dark text-sm leading-relaxed"
+                    dangerouslySetInnerHTML={{ __html: renderMarkdown(explanation) }}
+                  />
                 )}
               </div>
             </div>
