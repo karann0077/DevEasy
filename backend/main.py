@@ -14,19 +14,12 @@ from pinecone import Pinecone, ServerlessSpec
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 # ─────────────────────────────────────────────
-# BYPASS SYSTEM PROXIES (Critical for local dev)
-# ─────────────────────────────────────────────
-os.environ.pop("http_proxy", None)
-os.environ.pop("https_proxy", None)
-os.environ.pop("HTTP_PROXY", None)
-os.environ.pop("HTTPS_PROXY", None)
-
-# ─────────────────────────────────────────────
 # ENVIRONMENT VARIABLES
 # ─────────────────────────────────────────────
 GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
 PINECONE_INDEX   = os.getenv("PINECONE_INDEX_NAME", "innovate-bharat")
+ALLOWED_ORIGIN   = os.getenv("ALLOWED_ORIGIN", "*")
 
 GEMINI_EMBED_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -69,9 +62,12 @@ def get_or_create_index():
 # ─────────────────────────────────────────────
 app = FastAPI(title="InnovateBHARAT AI Engine", version="1.0.0")
 
+# Allow configuring CORS origin via environment variable.
+# Set ALLOWED_ORIGIN to your Vercel frontend URL in production,
+# e.g. https://your-app.vercel.app
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[ALLOWED_ORIGIN],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -206,7 +202,6 @@ def extract_code_files(zip_bytes: bytes, repo_name: str):
                 continue
     return files
 
-
 # ─────────────────────────────────────────────
 # ROUTES
 # ─────────────────────────────────────────────
@@ -214,7 +209,6 @@ def extract_code_files(zip_bytes: bytes, repo_name: str):
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "InnovateBHARAT AI Engine"}
-
 
 @app.post("/api/ingest", response_model=IngestResponse)
 def ingest_repo(req: IngestRequest):
@@ -289,7 +283,6 @@ def ingest_repo(req: IngestRequest):
         logs.append(traceback.format_exc())
         raise HTTPException(status_code=500, detail={"logs": logs, "error": str(e)})
 
-
 @app.post("/api/explain", response_model=ExplainResponse)
 def explain_code(req: ExplainRequest):
     try:
@@ -322,7 +315,8 @@ def explain_code(req: ExplainRequest):
         for match in results.matches:
             meta = match.metadata
             context_parts.append(
-                f"### File: {meta.get('file_path', 'unknown')}\n```\n{meta.get('text', '')}\n```"
+                f"### File: {meta.get('file_path', 'unknown')}\n```
+{meta.get('text', '')}\n```"
             )
             sources.append(meta.get("file_path", "unknown"))
 
@@ -349,7 +343,6 @@ Be precise, technical, and insightful."""
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/api/debug", response_model=DebugResponse)
 def debug_commit(req: DebugRequest):
@@ -441,7 +434,6 @@ Be concise and professional."""
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.post("/api/architecture", response_model=ArchitectureResponse)
 def get_architecture(req: ArchitectureRequest):
     """Generate architecture map nodes and edges."""
@@ -465,11 +457,9 @@ def get_architecture(req: ArchitectureRequest):
     ]
     return ArchitectureResponse(nodes=nodes, edges=edges)
 
-
 # ─────────────────────────────────────────────
 # NEW ENDPOINTS
 # ─────────────────────────────────────────────
-
 class FilesRequest(BaseModel):
     repo_name: Optional[str] = None
 
@@ -491,7 +481,6 @@ class DocsRequest(BaseModel):
 class DocsResponse(BaseModel):
     file_path: str
     documentation: str
-
 
 @app.post("/api/files", response_model=FilesResponse)
 def list_files(req: FilesRequest):
@@ -523,7 +512,6 @@ def list_files(req: FilesRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.post("/api/file-content", response_model=FileContentResponse)
 def get_file_content(req: FileContentRequest):
     """Return content of a specific file from Pinecone metadata."""
@@ -552,7 +540,6 @@ def get_file_content(req: FileContentRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/api/docs", response_model=DocsResponse)
 def generate_docs(req: DocsRequest):
