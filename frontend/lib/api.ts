@@ -30,6 +30,25 @@ export interface DebugResponse {
   diff: string;
 }
 
+export interface FilesResponse {
+  files: Array<{ path: string; repo_name: string }>;
+}
+
+export interface FileContentResponse {
+  file_path: string;
+  content: string;
+}
+
+export interface DocsRequest {
+  file_path: string;
+  repo_name?: string;
+}
+
+export interface DocsResponse {
+  file_path: string;
+  documentation: string;
+}
+
 async function apiFetch<T>(
   path: string,
   options: RequestInit = {}
@@ -68,6 +87,24 @@ export const api = {
 
   architecture: () =>
     apiFetch("/api/architecture", { method: "POST", body: JSON.stringify({}) }),
+
+  files: (repo_name?: string) =>
+    apiFetch<FilesResponse>("/api/files", {
+      method: "POST",
+      body: JSON.stringify({ repo_name }),
+    }),
+
+  fileContent: (file_path: string, repo_name?: string) =>
+    apiFetch<FileContentResponse>("/api/file-content", {
+      method: "POST",
+      body: JSON.stringify({ file_path, repo_name }),
+    }),
+
+  docs: (body: DocsRequest) =>
+    apiFetch<DocsResponse>("/api/docs", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   health: () => apiFetch("/health"),
 };
