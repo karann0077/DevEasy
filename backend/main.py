@@ -178,7 +178,10 @@ def parse_github_url(repo_url: str):
 def download_repo_zip(owner: str, repo: str) -> bytes:
     """Download repository as a zip via GitHub's zipball API."""
     url = f"https://api.github.com/repos/{owner}/{repo}/zipball"
-    headers = {"Accept": "application/vnd.github+json"}
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "InnovateBHARAT-AI-Engine/1.0",
+    }
     resp = requests.get(url, headers=headers, timeout=120, allow_redirects=True)
     resp.raise_for_status()
     return resp.content
@@ -461,3 +464,141 @@ def get_architecture(req: ArchitectureRequest):
         ArchitectureEdge(from_id="splitter", to_id="gemini", label="Text → Vectors"),
     ]
     return ArchitectureResponse(nodes=nodes, edges=edges)
+
+
+# ─────────────────────────────────────────────
+# NEW ENDPOINTS
+# ─────────────────────────────────────────────
+
+class FilesRequest(BaseModel):
+    repo_name: Optional[str] = None
+
+class FilesResponse(BaseModel):
+    files: List[dict]
+
+class FileContentRequest(BaseModel):
+    file_path: str
+    repo_name: Optional[str] = None
+
+class FileContentResponse(BaseModel):
+    file_path: str
+    content: str
+
+class DocsRequest(BaseModel):
+    file_path: str
+    repo_name: Optional[str] = None
+
+class DocsResponse(BaseModel):
+    file_path: str
+    documentation: str
+
+
+@app.post("/api/files", response_model=FilesResponse)
+def list_files(req: FilesRequest):
+    """Return the list of ingested files from Pinecone metadata."""
+    try:
+        index = get_or_create_index()
+        dummy_vector = [0.0] * EMBED_DIM
+        filter_dict = {}
+        if req.repo_name:
+            filter_dict = {"repo_name": {"$eq": req.repo_name}}
+
+        results = index.query(
+            vector=dummy_vector,
+            top_k=1000,
+            include_metadata=True,
+            filter=filter_dict if filter_dict else None,
+        )
+
+        seen_paths: set = set()
+        files = []
+        for match in results.matches:
+            fp = match.metadata.get("file_path", "")
+            rn = match.metadata.get("repo_name", "")
+            if fp and fp not in seen_paths:
+                seen_paths.add(fp)
+                files.append({"path": fp, "repo_name": rn})
+
+        return FilesResponse(files=files)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/file-content", response_model=FileContentResponse)
+def get_file_content(req: FileContentRequest):
+    """Return content of a specific file from Pinecone metadata."""
+    try:
+        index = get_or_create_index()
+        query_vector = gemini_embed(f"content of file {req.file_path}")
+
+        filter_dict: dict = {"file_path": {"$eq": req.file_path}}
+        if req.repo_name:
+            filter_dict["repo_name"] = {"$eq": req.repo_name}
+
+        results = index.query(
+            vector=query_vector,
+            top_k=20,
+            include_metadata=True,
+            filter=filter_dict,
+        )
+
+        if not results.matches:
+            raise HTTPException(status_code=404, detail=f"File '{req.file_path}' not found in index.")
+
+        chunks = [m.metadata.get("text", "") for m in results.matches]
+        content = "\n".join(chunks)
+        return FileContentResponse(file_path=req.file_path, content=content)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/docs", response_model=DocsResponse)
+def generate_docs(req: DocsRequest):
+    """Generate AI documentation for a specific file using RAG."""
+    try:
+        index = get_or_create_index()
+        query_vector = gemini_embed(f"documentation for file {req.file_path}")
+
+        filter_dict: dict = {"file_path": {"$eq": req.file_path}}
+        if req.repo_name:
+            filter_dict["repo_name"] = {"$eq": req.repo_name}
+
+        results = index.query(
+            vector=query_vector,
+            top_k=10,
+            include_metadata=True,
+            filter=filter_dict if filter_dict else None,
+        )
+
+        if not results.matches:
+            return DocsResponse(
+                file_path=req.file_path,
+                documentation="No content found for this file. Please ingest a repository first.",
+            )
+
+        context_chunks = [m.metadata.get("text", "") for m in results.matches]
+        context = "\n\n".join(context_chunks)
+
+        prompt = f"""You are InnovateBHARAT AI — an expert software architect generating living documentation.
+
+FILE: {req.file_path}
+
+CODE CONTEXT:
+{context}
+
+Generate comprehensive documentation for this file including:
+1. **Purpose**: What this file/module does.
+2. **Architecture Role**: How it fits into the overall system.
+3. **Key Functions/Classes**: Brief description of each major component.
+4. **Data Flow**: Step-by-step flow of data through this module.
+5. **Dependencies**: What this module depends on.
+6. **⚠️ Potential Issues**: Any anti-patterns or improvements to consider.
+
+Format as clear, readable markdown documentation."""
+
+        documentation = gemini_generate(prompt)
+        return DocsResponse(file_path=req.file_path, documentation=documentation)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

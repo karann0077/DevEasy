@@ -2,74 +2,68 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  Home,
-  Terminal,
-  Map,
+  Inbox,
+  BookOpen,
   Search,
+  Map,
   GitBranch,
   Cpu,
-  ExternalLink,
+  Sparkles,
 } from "lucide-react";
 
 const NAV_ITEMS = [
-  { href: "/", label: "Home", icon: Home },
-  { href: "/ingest", label: "Ingest", icon: Terminal },
-  { href: "/canvas", label: "Canvas", icon: Map },
-  { href: "/explorer", label: "Explorer", icon: Search },
-  { href: "/debugger", label: "Debugger", icon: GitBranch },
+  { href: "/ingest", label: "Project Hub", icon: Inbox },
+  { href: "/docs", label: "Living Docs", icon: BookOpen },
+  { href: "/explorer", label: "Code Explorer", icon: Search },
+  { href: "/canvas", label: "Zenith Canvas", icon: Map },
+  { href: "/debugger", label: "Time-Travel Git", icon: GitBranch },
 ];
 
 export default function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="w-16 bg-slate-950 border-r border-slate-800/70 flex flex-col items-center py-4 gap-1 shrink-0">
+    <aside className="w-56 bg-slate-950 border-r border-slate-800/70 flex flex-col py-4 shrink-0">
       {/* Logo */}
-      <div className="mb-4 p-2">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500 to-indigo-600 flex items-center justify-center">
-          <Cpu size={16} className="text-white" />
+      <div className="px-4 mb-6">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500 to-indigo-600 flex items-center justify-center shrink-0">
+            <Cpu size={16} className="text-white" />
+          </div>
+          <div>
+            <div className="text-white font-black text-sm leading-none">InnovateBHARAT</div>
+            <div className="text-slate-500 text-[10px] font-medium tracking-wider uppercase mt-0.5">Architectural Co-Pilot</div>
+          </div>
         </div>
       </div>
 
       {/* Nav Items */}
-      <nav className="flex flex-col items-center gap-1 flex-1">
+      <nav className="flex flex-col gap-0.5 flex-1 px-2">
         {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
-          const isActive = pathname === href;
+          const isActive = pathname === href || (pathname === "/" && href === "/ingest");
           return (
             <Link
               key={href}
               href={href}
-              title={label}
-              className={`relative group w-10 h-10 flex items-center justify-center rounded-xl transition-all duration-200 ${
+              className={`relative flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-200 text-sm font-medium ${
                 isActive
-                  ? "bg-cyan-500/20 text-cyan-400 shadow-cyan-glow"
-                  : "text-slate-500 hover:text-slate-200 hover:bg-slate-800"
+                  ? "bg-cyan-500/10 text-cyan-400 border-l-2 border-cyan-400"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border-l-2 border-transparent"
               }`}
             >
-              <Icon size={19} />
-              {isActive && (
-                <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-5 bg-cyan-400 rounded-r-full" />
-              )}
-              {/* Tooltip */}
-              <span className="absolute left-full ml-3 px-2 py-1 bg-slate-800 text-slate-200 text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-50">
-                {label}
-              </span>
+              <Icon size={17} className="shrink-0" />
+              <span>{label}</span>
             </Link>
           );
         })}
       </nav>
 
-      {/* Footer */}
-      <div className="mt-auto">
-        <a
-          href="https://github.com"
-          target="_blank"
-          rel="noopener noreferrer"
-          title="GitHub"
-          className="w-10 h-10 flex items-center justify-center rounded-xl text-slate-600 hover:text-slate-300 hover:bg-slate-800 transition-all"
-        >
-          <ExternalLink size={16} />
-        </a>
+      {/* Ask AI Tutor Button */}
+      <div className="px-3 mt-4">
+        <button className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 text-white text-sm font-semibold hover:from-indigo-500 hover:to-purple-500 transition-all">
+          <Sparkles size={15} />
+          Ask AI Tutor
+        </button>
       </div>
     </aside>
   );
