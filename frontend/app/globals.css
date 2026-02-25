@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #020617;
+  --foreground: #e2e8f0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0f172a;
+}
+::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #06b6d4;
+}
+
+/* Terminal cursor blink */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.terminal-cursor {
+  animation: blink 1s step-end infinite;
+}
+
+/* Markdown prose styles */
+.prose-dark h1, .prose-dark h2, .prose-dark h3 {
+  color: #e2e8f0;
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+}
+.prose-dark h1 { font-size: 1.5rem; font-weight: 700; }
+.prose-dark h2 { font-size: 1.25rem; font-weight: 600; color: #06b6d4; }
+.prose-dark h3 { font-size: 1.1rem; font-weight: 600; color: #a5b4fc; }
+.prose-dark p { margin-bottom: 0.75rem; line-height: 1.7; }
+.prose-dark ul { list-style: disc; margin-left: 1.5rem; margin-bottom: 0.75rem; }
+.prose-dark li { margin-bottom: 0.25rem; }
+.prose-dark code {
+  background: #1e293b;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-size: 0.875rem;
+  color: #06b6d4;
+}
+.prose-dark pre {
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  padding: 1rem;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+  margin-bottom: 1rem;
+}
+.prose-dark pre code {
+  background: transparent;
+  padding: 0;
+  color: #a5f3fc;
+}
+.prose-dark strong { color: #f1f5f9; font-weight: 600; }
+.prose-dark em { color: #cbd5e1; }
+
+/* Diff viewer */
+.diff-add { background: rgba(16, 185, 129, 0.15); border-left: 3px solid #10b981; }
+.diff-remove { background: rgba(239, 68, 68, 0.15); border-left: 3px solid #ef4444; }
+.diff-neutral { color: #64748b; }
+
+/* Glassmorphism */
+.glass {
+  background: rgba(15, 23, 42, 0.8);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(51, 65, 85, 0.6);
+}
