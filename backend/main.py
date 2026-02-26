@@ -1,23 +1,16 @@
-# backend/main.py
 import os
 import io
 import re
 import time
-import json
-import math
-import uuid
-import shutil
 import zipfile
-import hashlib
-import logging
-import tempfile
-import traceback
-from typing import List, Optional, Dict, Any, Tuple
-
 import requests
+import traceback
+from typing import List, Optional
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from pinecone import Pinecone, ServerlessSpec
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 # Try to support both pinecone SDK shapes (wrapper vs module import)
