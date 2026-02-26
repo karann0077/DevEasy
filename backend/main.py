@@ -1,591 +1,745 @@
+# backend/main.py
 import os
 import io
 import re
 import time
+import json
+import math
+import uuid
+import shutil
 import zipfile
-import requests
+import hashlib
+import logging
+import tempfile
 import traceback
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Tuple
 
+import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from pinecone import Pinecone, ServerlessSpec
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-# ─────────────────────────────────────────────
-# ENVIRONMENT VARIABLES
-# ─────────────────────────────────────────────
-GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
-PINECONE_INDEX   = os.getenv("PINECONE_INDEX_NAME", "innovate-bharat")
-ALLOWED_ORIGIN   = os.getenv("ALLOWED_ORIGIN", "*")
+# Try to support both pinecone SDK shapes (wrapper vs module import)
+try:
+    # Newer-style typed client (sometimes provided as class)
+    from pinecone import Pinecone  # type: ignore
+    PINECONE_CLIENT_CLASS = "pinecone_class"
+except Exception:
+    import pinecone as pinecone_module  # type: ignore
+    PINECONE_CLIENT_CLASS = "pinecone_module"  # type: ignore
 
-GEMINI_EMBED_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "text-embedding-004:embedContent"
-)
-GEMINI_GEN_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-1.5-flash:generateContent"
-)
-
-VALID_EXTENSIONS = {
-    ".py", ".js", ".ts", ".jsx", ".tsx", ".cpp", ".c", ".h",
-    ".java", ".go", ".rs", ".md", ".json", ".yaml", ".yml",
-    ".html", ".css", ".scss", ".sql", ".sh", ".env.example",
-}
-
+# Constants
 EMBED_DIM = 768
+DEFAULT_CHUNK_SIZE = 1200
+DEFAULT_CHUNK_OVERLAP = 200
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "deveasy-index")
+GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "text-embedding-004")
+GEMINI_GEN_MODEL = os.getenv("GEMINI_GEN_MODEL", "gemini-1.5-flash")
+GITHUB_USER_AGENT = os.getenv("GITHUB_USER_AGENT", "DevEasy-Ingest-Agent/1.0")
+ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "*")
 
-# ─────────────────────────────────────────────
-# PINECONE INIT
-# ─────────────────────────────────────────────
-pc = Pinecone(api_key=PINECONE_API_KEY)
+# Gemini REST endpoints (placeholders — replace with current Google endpoint if/when needed)
+GEMINI_EMBED_URL = os.getenv("GEMINI_EMBED_URL", "https://api.generativemodels.example/v1/embeddings")
+GEMINI_GEN_URL = os.getenv("GEMINI_GEN_URL", "https://api.generativemodels.example/v1/generate")
 
-def get_or_create_index():
-    existing = [i.name for i in pc.list_indexes()]
-    if PINECONE_INDEX not in existing:
-        pc.create_index(
-            name=PINECONE_INDEX,
-            dimension=EMBED_DIM,
-            metric="cosine",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        )
-        # Wait until ready
-        while not pc.describe_index(PINECONE_INDEX).status["ready"]:
-            time.sleep(1)
-    return pc.Index(PINECONE_INDEX)
+# Environment keys
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")  # optional for higher GitHub rate limits
 
-# ─────────────────────────────────────────────
-# FASTAPI APP
-# ─────────────────────────────────────────────
-app = FastAPI(title="InnovateBHARAT AI Engine", version="1.0.0")
+# Set up basic logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("deveasy-backend")
 
-# Allow configuring CORS origin via environment variable.
-# Set ALLOWED_ORIGIN to your Vercel frontend URL in production,
-# e.g. https://your-app.vercel.app
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[ALLOWED_ORIGIN],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="DevEasy Backend")
 
-# ─────────────────────────────────────────────
-# PYDANTIC SCHEMAS
-# ─────────────────────────────────────────────
+# CORS: don't use allow_credentials=True with allow_origins=["*"]
+if ALLOWED_ORIGIN == "*" or not ALLOWED_ORIGIN:
+    # Dev-friendly, but disallow credentials when wildcard is used
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[ALLOWED_ORIGIN],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+# ----------------------
+# Pydantic request models
+# ----------------------
 class IngestRequest(BaseModel):
     repo_url: str
+    allowed_exts: Optional[List[str]] = None  # e.g. [".py", ".js"]
+    chunk_size: Optional[int] = DEFAULT_CHUNK_SIZE
+    chunk_overlap: Optional[int] = DEFAULT_CHUNK_OVERLAP
+    index_name: Optional[str] = PINECONE_INDEX_NAME
 
-class IngestResponse(BaseModel):
-    status: str
-    logs: List[str]
-    chunks_ingested: int
 
 class ExplainRequest(BaseModel):
     query: str
-    repo_name: Optional[str] = None
+    index_name: Optional[str] = PINECONE_INDEX_NAME
+    repo_filter: Optional[str] = None  # repo name to filter results
 
-class ExplainResponse(BaseModel):
-    answer: str
-    sources: List[str]
 
 class DebugRequest(BaseModel):
     commit_url: str
-
-class DebugResponse(BaseModel):
-    blast_radius: List[str]
-    pr_summary: str
-    diff: str
-
-class ArchitectureRequest(BaseModel):
-    repo_name: Optional[str] = None
-
-class ArchitectureNode(BaseModel):
-    id: str
-    label: str
-    description: str
-    x: float
-    y: float
-    color: str
-
-class ArchitectureEdge(BaseModel):
-    from_id: str
-    to_id: str
-    label: str
-
-class ArchitectureResponse(BaseModel):
-    nodes: List[ArchitectureNode]
-    edges: List[ArchitectureEdge]
-
-# ─────────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────────
-def gemini_embed(text: str) -> List[float]:
-    """Generate a 768-dim embedding via Gemini REST API."""
-    payload = {
-        "model": "models/text-embedding-004",
-        "content": {"parts": [{"text": text}]},
-        "outputDimensionality": EMBED_DIM,
-    }
-    resp = requests.post(
-        GEMINI_EMBED_URL,
-        params={"key": GEMINI_API_KEY},
-        json=payload,
-        timeout=30,
-    )
-    resp.raise_for_status()
-    vector = resp.json()["embedding"]["values"]
-    return vector[:EMBED_DIM]
+    index_name: Optional[str] = PINECONE_INDEX_NAME
 
 
-def gemini_generate(prompt: str) -> str:
-    """Generate text via Gemini 1.5 Flash REST API."""
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.4,
-            "maxOutputTokens": 2048,
-        },
-    }
-    resp = requests.post(
-        GEMINI_GEN_URL,
-        params={"key": GEMINI_API_KEY},
-        json=payload,
-        timeout=60,
-    )
-    resp.raise_for_status()
-    return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+# ----------------------
+# Helper utilities
+# ----------------------
+def ensure_envs():
+    missing = []
+    if not PINECONE_API_KEY:
+        missing.append("PINECONE_API_KEY")
+    if not GEMINI_API_KEY:
+        missing.append("GEMINI_API_KEY")
+    if missing:
+        raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
 
-def parse_github_url(repo_url: str):
-    """Extract owner and repo name from a GitHub URL."""
-    repo_url = repo_url.rstrip("/")
-    match = re.match(r"https?://github\.com/([^/]+)/([^/]+)", repo_url)
-    if not match:
-        raise ValueError(f"Invalid GitHub URL: {repo_url}")
-    owner, repo = match.group(1), match.group(2)
-    repo = repo.replace(".git", "")
-    return owner, repo
+def append_log(logs: List[str], msg: str):
+    logs.append(msg)
+    logger.info(msg)
 
 
-def download_repo_zip(owner: str, repo: str) -> bytes:
-    """Download repository as a zip via GitHub's zipball API."""
-    url = f"https://api.github.com/repos/{owner}/{repo}/zipball"
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "InnovateBHARAT-AI-Engine/1.0",
-    }
-    resp = requests.get(url, headers=headers, timeout=120, allow_redirects=True)
-    resp.raise_for_status()
-    return resp.content
+def parse_github_url(url: str) -> Tuple[str, str]:
+    """
+    Parse GitHub repo URL and return (owner, repo_name)
+    Accepts forms:
+      - https://github.com/owner/repo
+      - https://github.com/owner/repo.git
+      - git@github.com:owner/repo.git
+    """
+    url = url.strip()
+    # Handle git@... style
+    git_ssh = re.match(r"git@github\.com:(?P<owner>[^/]+)/(?P<repo>[^/.]+)(?:\.git)?", url)
+    if git_ssh:
+        return git_ssh.group("owner"), git_ssh.group("repo")
+    # Handle https
+    m = re.match(r"https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)(?:/.*)?", url)
+    if m:
+        repo = m.group("repo")
+        repo = repo[:-4] if repo.endswith(".git") else repo
+        return m.group("owner"), repo
+    raise ValueError("Unsupported GitHub URL format: " + url)
 
 
-def extract_code_files(zip_bytes: bytes, repo_name: str):
-    """Extract valid code files from zip bytes."""
-    files = []
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        for name in zf.namelist():
-            ext = os.path.splitext(name)[1].lower()
-            if ext not in VALID_EXTENSIONS:
+def download_repo_zip(owner: str, repo: str, dest_path: str, logs: List[str]) -> str:
+    """
+    Downloads the repository zipball into dest_path and returns the local path.
+    """
+    headers = {"User-Agent": GITHUB_USER_AGENT}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"token {GITHUB_TOKEN}"
+    zip_url = f"https://api.github.com/repos/{owner}/{repo}/zipball"
+    append_log(logs, f"Downloading repo zip from {zip_url}")
+    r = requests.get(zip_url, headers=headers, stream=True, timeout=60)
+    if r.status_code != 200:
+        raise RuntimeError(f"Failed to download repo zip: {r.status_code} {r.text[:300]}")
+    out_file = os.path.join(dest_path, f"{owner}-{repo}.zip")
+    with open(out_file, "wb") as fh:
+        for chunk in r.iter_content(chunk_size=8192):
+            if chunk:
+                fh.write(chunk)
+    append_log(logs, f"Saved zip to {out_file}")
+    return out_file
+
+
+def extract_code_files(zip_path: str, allowed_exts: Optional[List[str]], logs: List[str]) -> List[Tuple[str, str]]:
+    """
+    Extract code files from the zip and return list of tuples: (normalized_path, contents)
+    """
+    allowed_exts = allowed_exts or [
+        ".py",
+        ".js",
+        ".ts",
+        ".java",
+        ".cpp",
+        ".c",
+        ".h",
+        ".go",
+        ".rs",
+        ".md",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".sh",
+        ".html",
+        ".css",
+    ]
+    files: List[Tuple[str, str]] = []
+    append_log(logs, f"Extracting files with allowed extensions: {allowed_exts}")
+    with zipfile.ZipFile(zip_path, "r") as z:
+        for info in z.infolist():
+            name = info.filename
+            # skip directories
+            if name.endswith("/"):
                 continue
-            try:
-                content = zf.read(name).decode("utf-8", errors="ignore")
-                if content.strip():
-                    # Normalize path: remove top-level dir prefix
-                    parts = name.split("/", 1)
-                    clean_path = parts[1] if len(parts) > 1 else name
-                    files.append({"path": clean_path, "content": content})
-            except Exception:
-                continue
+            # normalize path: drop top-level folder
+            parts = name.split("/", 1)
+            path = parts[1] if len(parts) > 1 else parts[0]
+            _, ext = os.path.splitext(path)
+            if ext.lower() in allowed_exts:
+                try:
+                    raw = z.read(info).decode(errors="replace")
+                except Exception:
+                    # fallback: read as bytes
+                    raw = z.read(info).decode("utf-8", errors="replace")
+                files.append((path, raw))
+    append_log(logs, f"Extracted {len(files)} code files from zip")
     return files
 
-# ─────────────────────────────────────────────
-# ROUTES
-# ─────────────────────────────────────────────
 
-@app.get("/health")
-def health():
-    return {"status": "ok", "service": "InnovateBHARAT AI Engine"}
+def _safe_hash(text: str) -> str:
+    h = hashlib.sha1(text.encode("utf-8")).hexdigest()
+    return h
 
-@app.post("/api/ingest", response_model=IngestResponse)
-def ingest_repo(req: IngestRequest):
-    logs = []
-    chunks_ingested = 0
 
+# ----------------------
+# Gemini helpers (REST)
+# ----------------------
+def gemini_embed_texts(texts: List[str], logs: List[str]) -> List[List[float]]:
+    """
+    Send texts to Gemini embedding endpoint and return list of embedding vectors.
+    Defensive about response shape and length.
+    """
+    if not texts:
+        return []
+
+    headers = {"Authorization": f"Bearer {GEMINI_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": GEMINI_EMBED_MODEL,
+        # Use batching at reasonable sizes (Gemini may accept list)
+        "input": texts,
+    }
+    append_log(logs, f"Calling Gemini embed endpoint for {len(texts)} items")
+    resp = requests.post(GEMINI_EMBED_URL, headers=headers, json=payload, timeout=60)
     try:
-        logs.append(f"[1/6] Parsing GitHub URL: {req.repo_url}")
-        owner, repo = parse_github_url(req.repo_url)
-        repo_name = f"{owner}/{repo}"
-        logs.append(f"[2/6] Downloading repository: {repo_name}")
+        data = resp.json()
+    except Exception:
+        raise RuntimeError(f"Non-JSON response from Gemini embedding: {resp.status_code} {resp.text[:400]}")
 
-        zip_bytes = download_repo_zip(owner, repo)
-        logs.append(f"[3/6] Download complete ({len(zip_bytes) // 1024} KB). Extracting code files...")
+    # Defensive parsing: try several common keys
+    vectors: List[List[float]] = []
+    if isinstance(data, dict):
+        # Case: data["embedding"]["values"] single or list
+        # Or: data["embeddings"] -> list of { "values": [...] } or list of lists
+        if "embedding" in data and isinstance(data["embedding"], dict) and "values" in data["embedding"]:
+            vectors = [data["embedding"]["values"]]
+        elif "embeddings" in data and isinstance(data["embeddings"], list):
+            # embeddings may be list of dicts or list of lists
+            for e in data["embeddings"]:
+                if isinstance(e, dict) and "values" in e:
+                    vectors.append(e["values"])
+                elif isinstance(e, list):
+                    vectors.append(e)
+        elif "data" in data and isinstance(data["data"], list):
+            # OpenAI-style: data -> [ {embedding: [...]} ]
+            for item in data["data"]:
+                if isinstance(item, dict):
+                    if "embedding" in item:
+                        vectors.append(item["embedding"])
+                    elif "values" in item:
+                        vectors.append(item["values"])
+        else:
+            # last attempt: if top-level is a list
+            if isinstance(data.get("result"), list):
+                for item in data["result"]:
+                    if isinstance(item, list):
+                        vectors.append(item)
+    elif isinstance(data, list):
+        # direct list-of-vectors
+        for item in data:
+            if isinstance(item, list):
+                vectors.append(item)
 
-        files = extract_code_files(zip_bytes, repo_name)
-        logs.append(f"[4/6] Extracted {len(files)} valid code files. Chunking...")
+    if not vectors:
+        raise RuntimeError(f"Could not parse embedding response from Gemini: {json.dumps(data)[:800]}")
 
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1200,
-            chunk_overlap=200,
-        )
+    # Validate dims and normalize (pad/truncate if necessary)
+    normalized: List[List[float]] = []
+    for v in vectors:
+        if len(v) != EMBED_DIM:
+            append_log(logs, f"Warning: embedding length {len(v)} != expected {EMBED_DIM}, adjusting")
+            if len(v) > EMBED_DIM:
+                v = v[:EMBED_DIM]
+            else:
+                # pad with zeros
+                v = v + [0.0] * (EMBED_DIM - len(v))
+        normalized.append(v)
+    return normalized
 
-        all_chunks = []
-        for f in files:
-            chunks = splitter.split_text(f["content"])
-            for chunk in chunks:
-                all_chunks.append({
-                    "text": chunk,
-                    "file_path": f["path"],
-                    "repo_name": repo_name,
-                })
 
-        logs.append(f"[5/6] Created {len(all_chunks)} chunks. Generating embeddings (this may take a while)...")
-
-        index = get_or_create_index()
-        vectors = []
-
-        for i, chunk in enumerate(all_chunks):
-            try:
-                embedding = gemini_embed(chunk["text"])
-                vectors.append({
-                    "id": f"{repo_name.replace('/', '_')}_{i}",
-                    "values": embedding,
-                    "metadata": {
-                        "text": chunk["text"][:1000],
-                        "file_path": chunk["file_path"],
-                        "repo_name": chunk["repo_name"],
-                    },
-                })
-                time.sleep(0.25)  # Rate limiting
-                if (i + 1) % 10 == 0:
-                    logs.append(f"    Embedded {i + 1}/{len(all_chunks)} chunks...")
-            except Exception as e:
-                logs.append(f"    WARNING: Skipped chunk {i}: {str(e)}")
-                continue
-
-        # Upsert in batches of 100
-        logs.append(f"[6/6] Upserting {len(vectors)} vectors to Pinecone...")
-        batch_size = 100
-        for start in range(0, len(vectors), batch_size):
-            batch = vectors[start : start + batch_size]
-            index.upsert(vectors=batch)
-
-        chunks_ingested = len(vectors)
-        logs.append(f"✅ Ingestion complete! {chunks_ingested} chunks stored in Pinecone index '{PINECONE_INDEX}'.")
-
-        return IngestResponse(status="success", logs=logs, chunks_ingested=chunks_ingested)
-
-    except Exception as e:
-        logs.append(f"❌ ERROR: {str(e)}")
-        logs.append(traceback.format_exc())
-        raise HTTPException(status_code=500, detail={"logs": logs, "error": str(e)})
-
-@app.post("/api/explain", response_model=ExplainResponse)
-def explain_code(req: ExplainRequest):
+def gemini_generate(prompt: str, logs: List[str], temperature: float = 0.1, max_output_tokens: int = 1024) -> str:
+    headers = {"Authorization": f"Bearer {GEMINI_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": GEMINI_GEN_MODEL,
+        "prompt": prompt,
+        "temperature": float(temperature),
+        "max_output_tokens": int(max_output_tokens),
+    }
+    append_log(logs, "Calling Gemini generate endpoint")
+    resp = requests.post(GEMINI_GEN_URL, headers=headers, json=payload, timeout=60)
     try:
-        index = get_or_create_index()
+        data = resp.json()
+    except Exception:
+        raise RuntimeError(f"Non-JSON response from Gemini generate: {resp.status_code} {resp.text[:400]}")
 
-        # Embed the query
-        query_vector = gemini_embed(req.query)
+    # Defensive: try common fields (e.g., 'output', 'generated_text', 'candidates', 'content')
+    text = None
+    if isinstance(data, dict):
+        # Common shapes
+        if "output" in data and isinstance(data["output"], str):
+            text = data["output"]
+        elif "generated_text" in data:
+            text = data["generated_text"]
+        elif "candidates" in data and isinstance(data["candidates"], list) and data["candidates"]:
+            # e.g. {"candidates": [{"content": "..."}]}
+            candidate = data["candidates"][0]
+            if isinstance(candidate, dict):
+                text = candidate.get("content") or candidate.get("text") or candidate.get("output")
+        elif "choices" in data and isinstance(data["choices"], list):
+            ch = data["choices"][0]
+            # openai-style
+            if isinstance(ch, dict) and "text" in ch:
+                text = ch["text"]
+        elif "result" in data and isinstance(data["result"], dict):
+            # some endpoints put string in result.output_text or similar
+            r = data["result"]
+            text = r.get("output_text") or r.get("content") or r.get("text")
+    if text is None:
+        # Fallback to pretty-print of response (safe)
+        text = json.dumps(data)
+    append_log(logs, "Gemini generation complete")
+    return text
 
-        # Query Pinecone
-        filter_dict = {}
-        if req.repo_name:
-            filter_dict = {"repo_name": {"$eq": req.repo_name}}
 
-        results = index.query(
-            vector=query_vector,
-            top_k=5,
-            include_metadata=True,
-            filter=filter_dict if filter_dict else None,
-        )
-
-        if not results.matches:
-            return ExplainResponse(
-                answer="No relevant code found. Please ingest a repository first.",
-                sources=[],
-            )
-
-        # Build context
-        context_parts = []
-        sources = []
-        for match in results.matches:
-            meta = match.metadata
-            context_parts.append(
-                f"### File: {meta.get('file_path', 'unknown')}\n```
-{meta.get('text', '')}\n```"
-            )
-            sources.append(meta.get("file_path", "unknown"))
-
-        context = "\n\n".join(context_parts)
-
-        prompt = f"""You are InnovateBHARAT AI — an expert software architect analyzing a codebase.
-
-RETRIEVED CODEBASE CONTEXT:
-{context}
-
-USER QUESTION: {req.query}
-
-Provide a comprehensive, markdown-formatted answer that includes:
-1. **Direct Answer**: Explain what the code does based on the retrieved context.
-2. **Architecture Impact**: How does this component fit into the overall system?
-3. **⚠️ Architectural Warnings**: Identify any potential issues, anti-patterns, or tech debt.
-4. **🔗 System-Wide Impacts**: What other parts of the system might be affected by changes here?
-5. **💡 Recommendations**: Suggest improvements if applicable.
-
-Be precise, technical, and insightful."""
-
-        answer = gemini_generate(prompt)
-        return ExplainResponse(answer=answer, sources=list(set(sources)))
-
+# ----------------------
+# Pinecone helpers
+# ----------------------
+def create_pinecone_client(logs: List[str]):
+    append_log(logs, "Initializing Pinecone client")
+    if PINECONE_CLIENT_CLASS == "pinecone_class":
+        # If environment provides class-style client
+        try:
+            client = Pinecone(api_key=PINECONE_API_KEY)
+            append_log(logs, "Using Pinecone class-style client")
+            return client
+        except Exception as e:
+            append_log(logs, f"Pinecone class init failed: {e}")
+            # fallback to module
+    try:
+        # try module style (most common)
+        import pinecone as pinecone_module  # type: ignore
+        pinecone_module.init(api_key=PINECONE_API_KEY)
+        append_log(logs, "Using pinecone module-style client")
+        return pinecone_module
     except Exception as e:
+        raise RuntimeError(f"Failed to initialize Pinecone client: {e}")
+
+
+def get_or_create_index(client, index_name: str, dimension: int, logs: List[str]):
+    append_log(logs, f"Ensuring index '{index_name}' exists (dim={dimension})")
+    # client.list_indexes() can be list or dict depending on SDK
+    existing = []
+    try:
+        resp = client.list_indexes()
+        if isinstance(resp, dict):
+            existing = resp.get("names", []) or resp.get("indexes", []) or []
+        elif isinstance(resp, list):
+            existing = resp
+        else:
+            # try to coerce to list
+            existing = list(resp)
+    except Exception as e:
+        append_log(logs, f"Warning: list_indexes failed: {e}")
+        existing = []
+
+    if index_name in existing:
+        append_log(logs, f"Index {index_name} already exists")
+        # return index handle/object
+        try:
+            if hasattr(client, "Index"):
+                return client.Index(index_name)
+            elif hasattr(client, "index"):
+                return client.index(index_name)
+            else:
+                return client  # best-effort
+        except Exception:
+            return client
+
+    # create index (SDKs differ)
+    append_log(logs, f"Creating index {index_name}")
+    try:
+        # attempt module-style creation
+        if hasattr(client, "create_index"):
+            client.create_index(name=index_name, dimension=dimension)
+        elif hasattr(client, "create"):
+            client.create(name=index_name, dimension=dimension)
+        else:
+            # last resort, try attribute on module
+            client.create_index(name=index_name, dimension=dimension)
+    except Exception as e:
+        append_log(logs, f"Index creation warning: {e}")
+
+    # return index handle
+    try:
+        if hasattr(client, "Index"):
+            return client.Index(index_name)
+        elif hasattr(client, "index"):
+            return client.index(index_name)
+    except Exception:
+        pass
+    return client
+
+
+# ----------------------
+# Endpoints
+# ----------------------
+@app.post("/api/ingest")
+def ingest(req: IngestRequest):
+    logs: List[str] = []
+    try:
+        ensure_envs()
+    except Exception as e:
+        logger.exception("Missing envs")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/debug", response_model=DebugResponse)
-def debug_commit(req: DebugRequest):
+    append_log(logs, f"Starting ingestion for {req.repo_url}")
+    tmpdir = tempfile.mkdtemp(prefix="deveasy-ingest-")
     try:
-        # Parse commit URL: https://github.com/owner/repo/commit/SHA
-        match = re.match(
-            r"https?://github\.com/([^/]+)/([^/]+)/commit/([a-f0-9]+)",
-            req.commit_url,
-        )
-        if not match:
-            raise ValueError("Invalid GitHub commit URL. Expected: https://github.com/owner/repo/commit/SHA")
+        # parse owner/repo
+        try:
+            owner, repo = parse_github_url(req.repo_url)
+            append_log(logs, f"Parsed GitHub URL -> owner: {owner}, repo: {repo}")
+        except Exception as e:
+            append_log(logs, f"Failed to parse GitHub URL: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid GitHub URL: {e}")
 
-        owner, repo, sha = match.group(1), match.group(2), match.group(3)
-        repo_name = f"{owner}/{repo}"
+        # download zip
+        try:
+            zip_path = download_repo_zip(owner, repo, tmpdir, logs)
+        except Exception as e:
+            append_log(logs, f"Failed to download zip: {e}")
+            raise HTTPException(status_code=500, detail=f"Download failed: {e}")
 
-        # Fetch commit diff from GitHub API
-        headers = {"Accept": "application/vnd.github.v3.diff"}
-        diff_resp = requests.get(
-            f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}",
-            headers={"Accept": "application/vnd.github+json"},
-            timeout=30,
-        )
-        diff_resp.raise_for_status()
-        commit_data = diff_resp.json()
+        # extract code files
+        files = extract_code_files(zip_path, req.allowed_exts, logs)
+        if not files:
+            append_log(logs, "No files matched the allowed extensions")
+            return {"status": "success", "logs": logs, "chunks_ingested": 0}
 
-        # Get the diff
-        diff_text_resp = requests.get(
-            f"https://github.com/{owner}/{repo}/commit/{sha}.diff",
-            timeout=30,
-        )
-        diff_text = diff_text_resp.text[:5000] if diff_text_resp.ok else "Diff unavailable"
-
-        changed_files = [f["filename"] for f in commit_data.get("files", [])]
-        commit_message = commit_data.get("commit", {}).get("message", "No message")
-
-        # Use RAG to find blast radius
-        index = get_or_create_index()
-        blast_radius = []
-
-        for changed_file in changed_files[:3]:  # Limit to 3 files
+        # chunk files
+        splitter = RecursiveCharacterTextSplitter(chunk_size=req.chunk_size, chunk_overlap=req.chunk_overlap)
+        all_chunks: List[Dict[str, Any]] = []
+        for path, content in files:
             try:
-                query = f"What code depends on or imports from {changed_file}?"
-                query_vector = gemini_embed(query)
-                results = index.query(
-                    vector=query_vector,
-                    top_k=3,
-                    include_metadata=True,
-                    filter={"repo_name": {"$eq": repo_name}},
-                )
-                for match in results.matches:
-                    fp = match.metadata.get("file_path", "")
-                    if fp and fp not in blast_radius and fp not in changed_files:
-                        blast_radius.append(fp)
+                parts = splitter.split_text(content)
             except Exception:
-                continue
+                # fallback simple splitting by length
+                chunk_size = req.chunk_size or DEFAULT_CHUNK_SIZE
+                parts = [content[i:i + chunk_size] for i in range(0, len(content), chunk_size - (req.chunk_overlap or DEFAULT_CHUNK_OVERLAP))]
+            for idx, chunk in enumerate(parts):
+                chunk_id = _safe_hash(path + ":" + str(idx))
+                all_chunks.append({
+                    "id": f"{repo}-{chunk_id}",
+                    "text": chunk,
+                    "path": path,
+                    "repo": repo,
+                })
+        append_log(logs, f"Created {len(all_chunks)} chunks from {len(files)} files")
 
-        # Generate PR summary using Gemini
-        summary_prompt = f"""You are a senior software engineer reviewing a Git commit.
+        # create/initialize pinecone
+        pinecone_client = create_pinecone_client(logs)
+        index_handle = get_or_create_index(pinecone_client, req.index_name, EMBED_DIM, logs)
 
-Commit SHA: {sha}
-Repository: {repo_name}
-Commit Message: {commit_message}
+        # embed and upsert in batches
+        BATCH = 8
+        total_ingested = 0
+        for i in range(0, len(all_chunks), BATCH):
+            batch = all_chunks[i:i + BATCH]
+            texts = [c["text"] for c in batch]
+            try:
+                vectors = gemini_embed_texts(texts, logs)
+            except Exception as e:
+                append_log(logs, f"Embedding failed for batch starting at {i}: {e}")
+                raise HTTPException(status_code=500, detail=f"Embedding failure: {e}")
 
-Changed Files:
-{chr(10).join(f'- {f}' for f in changed_files)}
+            to_upsert = []
+            for c, v in zip(batch, vectors):
+                metadata = {"text": c["text"], "path": c["path"], "repo": c["repo"]}
+                to_upsert.append({"id": c["id"], "values": v, "metadata": metadata})
 
-Git Diff (first 3000 chars):
-{diff_text[:3000]}
+            # perform upsert (defensive)
+            try:
+                if hasattr(index_handle, "upsert"):
+                    # many pinecone SDKs accept list of dict {"id","values","metadata"}
+                    index_handle.upsert(vectors=to_upsert)
+                elif hasattr(pinecone_client, "upsert"):
+                    pinecone_client.upsert(index=req.index_name, vectors=to_upsert)
+                else:
+                    # best-effort: try module index interface
+                    index_handle.upsert(vectors=to_upsert)
+                total_ingested += len(to_upsert)
+                append_log(logs, f"Upserted {len(to_upsert)} vectors (total {total_ingested})")
+            except Exception as e:
+                append_log(logs, f"Pinecone upsert failed: {e}")
+                # attempt to log the first vector to inspect shape
+                append_log(logs, f"First vector snippet: {str(to_upsert[0])[:400]}")
+                raise HTTPException(status_code=500, detail=f"Pinecone upsert failed: {e}")
 
-Generate a professional Pull Request summary with:
-1. **📋 Summary**: One-paragraph description of the changes.
-2. **🎯 Changes Made**: Bulleted list of specific changes.
-3. **⚠️ Potential Blast Radius**: Files that might be affected (beyond directly changed files).
-4. **✅ Testing Checklist**: Suggested tests to run.
-5. **🏷️ Suggested Labels**: e.g., bug-fix, feature, refactor, breaking-change.
+            # polite pause to avoid rate limits
+            time.sleep(0.2)
 
-Be concise and professional."""
+        append_log(logs, f"Ingestion complete — total chunks ingested: {total_ingested}")
+        return {"status": "success", "logs": logs, "chunks_ingested": total_ingested}
+    except HTTPException:
+        # rethrow
+        raise
+    except Exception as exc:
+        tb = traceback.format_exc()
+        append_log(logs, f"Unhandled error: {exc}\n{tb}")
+        raise HTTPException(status_code=500, detail={"error": str(exc), "trace": tb, "logs": logs})
+    finally:
+        try:
+            shutil.rmtree(tmpdir)
+        except Exception:
+            pass
 
-        pr_summary = gemini_generate(summary_prompt)
 
-        return DebugResponse(
-            blast_radius=blast_radius[:10],
-            pr_summary=pr_summary,
-            diff=diff_text,
-        )
-
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+@app.post("/api/explain")
+def explain(req: ExplainRequest):
+    logs: List[str] = []
+    try:
+        ensure_envs()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/architecture", response_model=ArchitectureResponse)
-def get_architecture(req: ArchitectureRequest):
-    """Generate architecture map nodes and edges."""
-    # Default architecture for a full-stack app
-    # In production, this would use RAG to analyze the actual repo
-    nodes = [
-        ArchitectureNode(id="client", label="Client", description="Next.js React frontend with Tailwind CSS. Handles all UI interactions, state management, and API communication.", x=100, y=250, color="#06b6d4"),
-        ArchitectureNode(id="api", label="FastAPI Backend", description="Python FastAPI server handling ingestion, RAG queries, and commit analysis. Implements CORS and REST endpoints.", x=400, y=250, color="#6366f1"),
-        ArchitectureNode(id="gemini", label="Google Gemini", description="Gemini 1.5 Flash for generation and text-embedding-004 for 768-dim vector embeddings via direct REST API calls.", x=700, y=100, color="#f59e0b"),
-        ArchitectureNode(id="pinecone", label="Pinecone Vector DB", description="Serverless Pinecone index (AWS us-east-1, 768 dims, cosine metric) storing code chunk embeddings and metadata.", x=700, y=400, color="#10b981"),
-        ArchitectureNode(id="github", label="GitHub API", description="Public GitHub REST API for repository zip downloads, commit diffs, and file metadata.", x=400, y=500, color="#8b5cf6"),
-        ArchitectureNode(id="splitter", label="Text Splitter", description="LangChain RecursiveCharacterTextSplitter (chunk_size=1200, overlap=200) for intelligent code chunking.", x=400, y=50, color="#ec4899"),
-    ]
-    edges = [
-        ArchitectureEdge(from_id="client", to_id="api", label="REST /api/*"),
-        ArchitectureEdge(from_id="api", to_id="gemini", label="Embed & Generate"),
-        ArchitectureEdge(from_id="api", to_id="pinecone", label="Upsert / Query"),
-        ArchitectureEdge(from_id="api", to_id="github", label="Zipball / Commits"),
-        ArchitectureEdge(from_id="api", to_id="splitter", label="Chunk Code"),
-        ArchitectureEdge(from_id="splitter", to_id="gemini", label="Text → Vectors"),
-    ]
-    return ArchitectureResponse(nodes=nodes, edges=edges)
-
-# ─────────────────────────────────────────────
-# NEW ENDPOINTS
-# ─────────────────────────────────────────────
-class FilesRequest(BaseModel):
-    repo_name: Optional[str] = None
-
-class FilesResponse(BaseModel):
-    files: List[dict]
-
-class FileContentRequest(BaseModel):
-    file_path: str
-    repo_name: Optional[str] = None
-
-class FileContentResponse(BaseModel):
-    file_path: str
-    content: str
-
-class DocsRequest(BaseModel):
-    file_path: str
-    repo_name: Optional[str] = None
-
-class DocsResponse(BaseModel):
-    file_path: str
-    documentation: str
-
-@app.post("/api/files", response_model=FilesResponse)
-def list_files(req: FilesRequest):
-    """Return the list of ingested files from Pinecone metadata."""
+    append_log(logs, f"Explain requested for query: {req.query}")
     try:
-        index = get_or_create_index()
-        dummy_vector = [0.0] * EMBED_DIM
-        filter_dict = {}
-        if req.repo_name:
-            filter_dict = {"repo_name": {"$eq": req.repo_name}}
+        pinecone_client = create_pinecone_client(logs)
+        index_handle = get_or_create_index(pinecone_client, req.index_name, EMBED_DIM, logs)
 
-        results = index.query(
-            vector=dummy_vector,
-            top_k=1000,
-            include_metadata=True,
-            filter=filter_dict if filter_dict else None,
+        # embed query
+        query_vector = gemini_embed_texts([req.query], logs)[0]
+
+        # pinecone query (defensive)
+        append_log(logs, "Querying Pinecone for relevant code chunks")
+        top_k = 5
+        results = None
+        try:
+            if hasattr(index_handle, "query"):
+                # common signature
+                results = index_handle.query(vector=query_vector, top_k=top_k, include_metadata=True)
+            elif hasattr(pinecone_client, "query"):
+                results = pinecone_client.query(index=req.index_name, vector=query_vector, top_k=top_k, include_metadata=True)
+            else:
+                results = index_handle.query(vector=query_vector, top_k=top_k, include_metadata=True)
+        except Exception as e:
+            append_log(logs, f"Pinecone query failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Pinecone query failed: {e}")
+
+        # parse result to extract metadata/text
+        hits: List[Dict[str, Any]] = []
+        if isinstance(results, dict):
+            # e.g., {"matches": [...]}
+            matches = results.get("matches") or results.get("matches", [])
+            for m in matches:
+                metadata = m.get("metadata") or {}
+                hits.append({"id": m.get("id"), "score": m.get("score"), "metadata": metadata})
+        else:
+            # attempt to inspect attribute
+            try:
+                matches = getattr(results, "matches", None) or results
+                for m in matches:
+                    if isinstance(m, dict):
+                        metadata = m.get("metadata", {})
+                        hits.append({"id": m.get("id"), "score": m.get("score"), "metadata": metadata})
+            except Exception:
+                pass
+
+        # build context from hits
+        sources = []
+        context_parts = []
+        for h in hits[:top_k]:
+            md = h.get("metadata", {})
+            text = md.get("text") or ""
+            path = md.get("path") or md.get("file") or "unknown"
+            repo = md.get("repo") or ""
+            sources.append({"path": path, "repo": repo})
+            # keep short snippet
+            snippet = text[:1500]
+            context_parts.append(f"--- FILE: {path} ---\n{snippet}\n")
+
+        rag_prompt = (
+            "You are an expert code reviewer. Use the following context from repository files to answer the user's question.\n\n"
+            f"CONTEXT:\n{''.join(context_parts)}\n\n"
+            f"USER QUESTION: {req.query}\n\n"
+            "Please produce a complete answer in Markdown that includes:\n"
+            "1. A direct, concise answer.\n"
+            "2. Which files or code areas were used as source (list file paths).\n"
+            "3. Possible architecture/system-wide impacts.\n"
+            "4. Warnings and testing suggestions.\n            "
         )
+        answer = gemini_generate(rag_prompt, logs, temperature=0.05, max_output_tokens=900)
 
-        seen_paths: set = set()
-        files = []
-        for match in results.matches:
-            fp = match.metadata.get("file_path", "")
-            rn = match.metadata.get("repo_name", "")
-            if fp and fp not in seen_paths:
-                seen_paths.add(fp)
-                files.append({"path": fp, "repo_name": rn})
-
-        return FilesResponse(files=files)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/file-content", response_model=FileContentResponse)
-def get_file_content(req: FileContentRequest):
-    """Return content of a specific file from Pinecone metadata."""
-    try:
-        index = get_or_create_index()
-        query_vector = gemini_embed(f"content of file {req.file_path}")
-
-        filter_dict: dict = {"file_path": {"$eq": req.file_path}}
-        if req.repo_name:
-            filter_dict["repo_name"] = {"$eq": req.repo_name}
-
-        results = index.query(
-            vector=query_vector,
-            top_k=20,
-            include_metadata=True,
-            filter=filter_dict,
-        )
-
-        if not results.matches:
-            raise HTTPException(status_code=404, detail=f"File '{req.file_path}' not found in index.")
-
-        chunks = [m.metadata.get("text", "") for m in results.matches]
-        content = "\n".join(chunks)
-        return FileContentResponse(file_path=req.file_path, content=content)
+        return {"answer": answer, "sources": sources, "logs": logs}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        tb = traceback.format_exc()
+        append_log(logs, f"Unhandled error in explain: {exc}\n{tb}")
+        raise HTTPException(status_code=500, detail={"error": str(exc), "trace": tb, "logs": logs})
 
-@app.post("/api/docs", response_model=DocsResponse)
-def generate_docs(req: DocsRequest):
-    """Generate AI documentation for a specific file using RAG."""
+
+@app.post("/api/debug")
+def debug(req: DebugRequest):
+    logs: List[str] = []
     try:
-        index = get_or_create_index()
-        query_vector = gemini_embed(f"documentation for file {req.file_path}")
-
-        filter_dict: dict = {"file_path": {"$eq": req.file_path}}
-        if req.repo_name:
-            filter_dict["repo_name"] = {"$eq": req.repo_name}
-
-        results = index.query(
-            vector=query_vector,
-            top_k=10,
-            include_metadata=True,
-            filter=filter_dict if filter_dict else None,
-        )
-
-        if not results.matches:
-            return DocsResponse(
-                file_path=req.file_path,
-                documentation="No content found for this file. Please ingest a repository first.",
-            )
-
-        context_chunks = [m.metadata.get("text", "") for m in results.matches]
-        context = "\n\n".join(context_chunks)
-
-        prompt = f"""You are InnovateBHARAT AI — an expert software architect generating living documentation.
-
-FILE: {req.file_path}
-
-CODE CONTEXT:
-{context}
-
-Generate comprehensive documentation for this file including:
-1. **Purpose**: What this file/module does.
-2. **Architecture Role**: How it fits into the overall system.
-3. **Key Functions/Classes**: Brief description of each major component.
-4. **Data Flow**: Step-by-step flow of data through this module.
-5. **Dependencies**: What this module depends on.
-6. **⚠️ Potential Issues**: Any anti-patterns or improvements to consider.
-
-Format as clear, readable markdown documentation."""
-
-        documentation = gemini_generate(prompt)
-        return DocsResponse(file_path=req.file_path, documentation=documentation)
+        ensure_envs()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+    append_log(logs, f"Debug requested for commit: {req.commit_url}")
+    try:
+        # parse commit url: accept https://github.com/{owner}/{repo}/commit/{sha}
+        m = re.match(r"https?://github\.com/([^/]+)/([^/]+)/commit/([0-9a-fA-F]+)", req.commit_url)
+        if not m:
+            raise HTTPException(status_code=400, detail="Invalid commit URL format")
+        owner, repo, sha = m.group(1), m.group(2), m.group(3)
+        append_log(logs, f"Parsed commit -> owner:{owner} repo:{repo} sha:{sha}")
+
+        # fetch commit details from GitHub
+        headers = {"User-Agent": GITHUB_USER_AGENT, "Accept": "application/vnd.github.v3+json"}
+        if GITHUB_TOKEN:
+            headers["Authorization"] = f"token {GITHUB_TOKEN}"
+        commit_api = f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}"
+        append_log(logs, f"Fetching commit from {commit_api}")
+        r = requests.get(commit_api, headers=headers, timeout=30)
+        if r.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"GitHub API error: {r.status_code} {r.text[:200]}")
+        commit_json = r.json()
+        files = commit_json.get("files", [])
+        if not files:
+            append_log(logs, "No files changed in commit")
+        changed_files = []
+        unified_diff_parts = []
+        for f in files:
+            path = f.get("filename")
+            patch = f.get("patch") or ""
+            changed_files.append(path)
+            if patch:
+                unified_diff_parts.append(f"--- {path} ---\n{patch}\n")
+
+        # For each changed file, query pinecone to find dependent chunks
+        pinecone_client = create_pinecone_client(logs)
+        index_handle = get_or_create_index(pinecone_client, req.index_name, EMBED_DIM, logs)
+
+        def query_file_context(file_path: str) -> List[str]:
+            # Embed file path as a query or short description
+            v = gemini_embed_texts([file_path], logs)[0]
+            try:
+                if hasattr(index_handle, "query"):
+                    res = index_handle.query(vector=v, top_k=8, include_metadata=True)
+                else:
+                    res = pinecone_client.query(index=req.index_name, vector=v, top_k=8, include_metadata=True)
+            except Exception:
+                return []
+            hits_local = []
+            if isinstance(res, dict):
+                for m in res.get("matches", [])[:8]:
+                    md = m.get("metadata", {})
+                    hits_local.append(md.get("path") or "unknown")
+            else:
+                matches = getattr(res, "matches", res)
+                for m in matches:
+                    if isinstance(m, dict):
+                        hits_local.append(m.get("metadata", {}).get("path", "unknown"))
+            return hits_local
+
+        blast_radius = set()
+        for ch in changed_files:
+            append_log(logs, f"Analyzing blast radius for: {ch}")
+            deps = query_file_context(ch)
+            for d in deps:
+                blast_radius.add(d)
+            time.sleep(0.1)
+
+        blast_list = sorted(list(blast_radius))
+        append_log(logs, f"Blast radius files: {blast_list}")
+
+        # Generate PR summary using Gemini
+        pr_prompt = (
+            f"You're drafting a PR summary for changes in commit {sha} of repo {owner}/{repo}.\n\n"
+            f"Changed files:\n{json.dumps(changed_files, indent=2)}\n\n"
+            f"Potentially impacted files (blast radius):\n{json.dumps(blast_list, indent=2)}\n\n"
+            "Please produce a markdown PR summary including:\n"
+            "- Short summary\n"
+            "- Changed areas (bulleted)\n"
+            "- Potential risks / blast radius\n"
+            "- Recommended tests / checklist\n"
+            "- Suggested labels (e.g., bug, refactor, docs)\n"
+        )
+        pr_summary = gemini_generate(pr_prompt, logs, temperature=0.05, max_output_tokens=600)
+
+        diff_text = "\n".join(unified_diff_parts) if unified_diff_parts else ""
+        return {"diff": diff_text, "blast_radius": blast_list, "pr_summary": pr_summary, "logs": logs}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        tb = traceback.format_exc()
+        append_log(logs, f"Unhandled error in debug: {exc}\n{tb}")
+        raise HTTPException(status_code=500, detail={"error": str(exc), "trace": tb, "logs": logs})
+
+
+@app.post("/api/architecture")
+def architecture():
+    # Hardcoded architecture map — you can later replace with real generated nodes/edges
+    nodes = [
+        {"id": "client", "label": "Client", "description": "Frontend client (browser)", "x": 0, "y": 0, "color": "#6EE7B7"},
+        {"id": "backend", "label": "Backend", "description": "FastAPI backend (this service)", "x": 200, "y": 0, "color": "#60A5FA"},
+        {"id": "gemini", "label": "Gemini", "description": "Google Gemini LLM & embeddings", "x": 400, "y": -80, "color": "#F97316"},
+        {"id": "pinecone", "label": "Pinecone", "description": "Vector DB", "x": 400, "y": 80, "color": "#FB7185"},
+        {"id": "github", "label": "GitHub", "description": "Source repositories", "x": -200, "y": 80, "color": "#A78BFA"},
+        {"id": "splitter", "label": "Splitter", "description": "LangChain chunker", "x": 200, "y": -120, "color": "#FDE68A"},
+    ]
+    edges = [
+        {"from": "client", "to": "backend", "label": "REST"},
+        {"from": "backend", "to": "github", "label": "download/ingest"},
+        {"from": "backend", "to": "splitter", "label": "chunk"},
+        {"from": "splitter", "to": "pinecone", "label": "upsert embeddings"},
+        {"from": "backend", "to": "gemini", "label": "embed / generate"},
+        {"from": "pinecone", "to": "backend", "label": "RAG retrieval"},
+    ]
+    return {"nodes": nodes, "edges": edges}
+
+
+# Root health check
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "DevEasy backend"}
+
+
+# If run directly
+if __name__ == "__main__":
+    import uvicorn
+
+    # Do not crash quietly if envs are missing
+    try:
+        ensure_envs()
+    except Exception as e:
+        logger.warning(f"Startup env check failed: {e}")
+
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=True)
