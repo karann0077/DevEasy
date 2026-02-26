@@ -25,16 +25,21 @@ export default function IngestPage() {
   // Helper: ensure we always return an array of strings
   const normalizeToStrings = (candidate: any): string[] => {
     try {
-      if (!candidate && candidate !== 0) return [];
-      if (Array.isArray(candidate)) return candidate.map((x) => (typeof x === "string" ? x : JSON.stringify(x)));
+      if (candidate === null || candidate === undefined) return [];
+      if (Array.isArray(candidate)) {
+        return candidate.map((x: any) => (typeof x === "string" ? x : JSON.stringify(x)));
+      }
       if (typeof candidate === "string") return [candidate];
       // If it's an object, try to extract common structures
       if (typeof candidate === "object") {
         // common shape: { detail: { logs: [...] } } or { detail: "message" }
-        if (candidate.detail) {
-          if (Array.isArray(candidate.detail.logs)) return candidate.detail.logs.map((x) => (typeof x === "string" ? x : JSON.stringify(x)));
-          if (typeof candidate.detail === "string") return [candidate.detail];
-          return [JSON.stringify(candidate.detail)];
+        if ((candidate as any).detail) {
+          const detail = (candidate as any).detail;
+          if (Array.isArray(detail.logs)) {
+            return detail.logs.map((x: any) => (typeof x === "string" ? x : JSON.stringify(x)));
+          }
+          if (typeof detail === "string") return [detail];
+          return [JSON.stringify(detail)];
         }
         // fallback: stringify
         return [JSON.stringify(candidate)];
