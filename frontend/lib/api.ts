@@ -1,4 +1,6 @@
-async function apiFetch<T>(
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
+
+export async function apiFetch<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
@@ -9,14 +11,7 @@ async function apiFetch<T>(
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    // FIX #8: Handle object detail (e.g. { error: "...", trace: "..." })
-    // instead of passing it directly to Error which produces [object Object]
-    const detail = err?.detail;
-    const message =
-      typeof detail === "string"
-        ? detail
-        : detail?.error || JSON.stringify(detail) || `API Error ${res.status}`;
-    throw new Error(message);
+    throw new Error(err?.detail || `API Error ${res.status}`);
   }
 
   return res.json();
