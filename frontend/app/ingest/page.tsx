@@ -26,11 +26,8 @@ export default function IngestPage() {
   const normalizeToStrings = (candidate: unknown): string[] => {
     try {
       if (candidate === null || candidate === undefined) return [];
-      if (Array.isArray(candidate)) {
-        return candidate.map((x: unknown): string =>
-          typeof x === "string" ? x : JSON.stringify(x)
-        );
-      }
+     if (Array.isArray(candidate.detail.logs))
+  return candidate.detail.logs.map((x: unknown) => (typeof x === "string" ? x : JSON.stringify(x)));
       if (typeof candidate === "string") return [candidate];
       if (typeof candidate === "object") {
         const obj = candidate as Record<string, unknown>;
@@ -256,3 +253,4 @@ export default function IngestPage() {
     </div>
   );
 }
+
