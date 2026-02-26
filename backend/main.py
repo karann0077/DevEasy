@@ -85,6 +85,23 @@ class DebugRequest(BaseModel):
     index_name: Optional[str] = PINECONE_INDEX_NAME
 
 
+class DocsRequest(BaseModel):
+    file_path: str
+    repo_name: Optional[str] = None
+    index_name: Optional[str] = PINECONE_INDEX_NAME
+
+
+class FilesRequest(BaseModel):
+    repo_name: Optional[str] = None
+    index_name: Optional[str] = PINECONE_INDEX_NAME
+
+
+class FileContentRequest(BaseModel):
+    file_path: str
+    repo_name: Optional[str] = None
+    index_name: Optional[str] = PINECONE_INDEX_NAME
+
+
 # ==========================================================
 # UTILITIES
 # ==========================================================
@@ -106,6 +123,14 @@ def parse_github_url(url: str) -> Tuple[str, str]:
     if not m:
         raise ValueError("Invalid GitHub URL")
     return m.group(1), m.group(2).replace(".git", "")
+
+
+def parse_commit_url(url: str) -> Tuple[str, str, str]:
+    """Parse a GitHub commit URL into (owner, repo, sha)."""
+    m = re.match(r"https?://github\.com/([^/]+)/([^/]+)/commit/([a-fA-F0-9]+)", url)
+    if not m:
+        raise ValueError("Invalid GitHub commit URL. Expected format: https://github.com/owner/repo/commit/sha")
+    return m.group(1), m.group(2).replace(".git", ""), m.group(3)
 
 
 def safe_hash(text: str) -> str:
@@ -195,6 +220,7 @@ def health():
 def ingest(req: IngestRequest):
     logs = []
     ensure_envs()
+    tmpdir = None
 
     try:
         owner, repo = parse_github_url(req.repo_url)
@@ -258,6 +284,10 @@ def ingest(req: IngestRequest):
     except Exception as e:
         tb = traceback.format_exc()
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": tb})
+    finally:
+        # FIX #5: Clean up temp directory to prevent disk space leaks
+        if tmpdir and os.path.exists(tmpdir):
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 @app.post("/api/explain")
@@ -303,12 +333,201 @@ Answer in markdown with:
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": tb})
 
 
+# FIX #4: Implement real debug endpoint instead of stub
 @app.post("/api/debug")
 def debug(req: DebugRequest):
     ensure_envs()
 
     try:
-        return {"message": "Debug endpoint ready (simplified version)"}
+        owner, repo, sha = parse_commit_url(req.commit_url)
+
+        # Fetch commit data from GitHub API
+        headers = {"User-Agent": "DevEasy", "Accept": "application/vnd.github.v3+json"}
+        if GITHUB_TOKEN:
+            headers["Authorization"] = f"token {GITHUB_TOKEN}"
+
+        commit_api_url = f"https://api.github.com/repos/{owner}/{repo}/commits/{sha}"
+        r = requests.get(commit_api_url, headers=headers, timeout=30)
+
+        if r.status_code != 200:
+            raise RuntimeError(f"Failed to fetch commit from GitHub: {r.status_code} {r.text[:200]}")
+
+        commit_data = r.json()
+
+        # Extract blast radius (changed files)
+        blast_radius = []
+        diff_text = ""
+        for file_info in commit_data.get("files", []):
+            blast_radius.append(file_info.get("filename", "unknown"))
+            status = file_info.get("status", "modified")
+            patch = file_info.get("patch", "")
+            diff_text += f"\n--- {file_info.get('filename', 'unknown')} ({status}) ---\n{patch}\n"
+
+        # Get commit message
+        commit_message = commit_data.get("commit", {}).get("message", "No commit message")
+
+        # Generate AI analysis using Gemini
+        prompt = f"""You are an expert code reviewer. Analyze the following Git commit and provide:
+
+1. **Root Cause Analysis**: What does this commit change and why might it cause issues?
+2. **Blast Radius Assessment**: What parts of the system are affected?
+3. **Risk Analysis**: What are the potential risks of this change?
+4. **Recommendations**: What should be checked or fixed?
+
+Commit message: {commit_message}
+Repository: {owner}/{repo}
+Changed files: {', '.join(blast_radius)}
+
+Diff:
+{diff_text[:4000]}
+
+Provide your analysis in markdown format."""
+
+        pr_summary = gemini_generate(prompt)
+
+        return {
+            "blast_radius": blast_radius,
+            "pr_summary": pr_summary,
+            "diff": diff_text
+        }
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": tb})
+
+
+# FIX #1: Add /api/docs endpoint
+@app.post("/api/docs")
+def docs(req: DocsRequest):
+    ensure_envs()
+
+    try:
+        index = get_index(req.index_name)
+
+        # Search for chunks matching the file path
+        query_text = f"Documentation for file: {req.file_path}"
+        query_vec = gemini_embed_texts([query_text])[0]
+
+        # Build metadata filter if repo_name is provided
+        filter_dict = {}
+        if req.repo_name:
+            filter_dict["repo"] = req.repo_name
+
+        results = index.query(
+            vector=query_vec,
+            top_k=10,
+            include_metadata=True,
+            filter=filter_dict if filter_dict else None
+        )
+
+        # Gather context from matching chunks
+        context = ""
+        for m in results["matches"]:
+            md = m["metadata"]
+            context += f"\n--- {md['path']} ---\n{md['text'][:1200]}\n"
+
+        if not context.strip():
+            context = f"(No ingested code found for file: {req.file_path}. Generate general documentation based on the file name.)"
+
+        prompt = f"""Generate comprehensive developer documentation for the file: {req.file_path}
+
+Use the following code context from the ingested codebase:
+
+{context}
+
+Generate documentation in markdown format that includes:
+- **Overview**: What this file does
+- **Key Functions/Classes**: List and describe the main components
+- **Data Flow**: How data moves through this file
+- **Dependencies**: What this file depends on
+- **Architecture Notes**: How this fits into the larger system
+"""
+
+        documentation = gemini_generate(prompt)
+
+        return {"file_path": req.file_path, "documentation": documentation}
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": tb})
+
+
+# FIX #2: Add /api/files endpoint
+@app.post("/api/files")
+def list_files(req: FilesRequest):
+    ensure_envs()
+
+    try:
+        index = get_index(req.index_name)
+
+        # Query with a generic vector to get file listings
+        query_text = f"list all files{' in ' + req.repo_name if req.repo_name else ''}"
+        query_vec = gemini_embed_texts([query_text])[0]
+
+        filter_dict = {}
+        if req.repo_name:
+            filter_dict["repo"] = req.repo_name
+
+        results = index.query(
+            vector=query_vec,
+            top_k=100,
+            include_metadata=True,
+            filter=filter_dict if filter_dict else None
+        )
+
+        # Deduplicate files by path
+        seen = set()
+        files = []
+        for m in results["matches"]:
+            md = m["metadata"]
+            path = md.get("path", "")
+            repo = md.get("repo", "")
+            key = f"{repo}:{path}"
+            if key not in seen:
+                seen.add(key)
+                files.append({"path": path, "repo_name": repo})
+
+        return {"files": files}
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        raise HTTPException(status_code=500, detail={"error": str(e), "trace": tb})
+
+
+# FIX #3: Add /api/file-content endpoint
+@app.post("/api/file-content")
+def file_content(req: FileContentRequest):
+    ensure_envs()
+
+    try:
+        index = get_index(req.index_name)
+
+        # Search for chunks from this specific file
+        query_text = f"Content of file: {req.file_path}"
+        query_vec = gemini_embed_texts([query_text])[0]
+
+        filter_dict = {}
+        if req.repo_name:
+            filter_dict["repo"] = req.repo_name
+
+        results = index.query(
+            vector=query_vec,
+            top_k=50,
+            include_metadata=True,
+            filter=filter_dict if filter_dict else None
+        )
+
+        # Reassemble content from matching chunks (filter by path)
+        chunks = []
+        for m in results["matches"]:
+            md = m["metadata"]
+            if req.file_path in md.get("path", ""):
+                chunks.append(md.get("text", ""))
+
+        content = "\n".join(chunks) if chunks else f"No content found for file: {req.file_path}"
+
+        return {"file_path": req.file_path, "content": content}
+
     except Exception as e:
         tb = traceback.format_exc()
         raise HTTPException(status_code=500, detail={"error": str(e), "trace": tb})
