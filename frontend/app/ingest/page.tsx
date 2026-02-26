@@ -23,26 +23,35 @@ export default function IngestPage() {
   }, [logs]);
 
   // Helper: ensure we always return an array of strings
-  const normalizeToStrings = (candidate: any): string[] => {
+  const normalizeToStrings = (candidate: unknown): string[] => {
     try {
       if (candidate === null || candidate === undefined) return [];
       if (Array.isArray(candidate)) {
-        return candidate.map((x: any) => (typeof x === "string" ? x : JSON.stringify(x)));
+        return candidate.map((x: unknown): string =>
+          typeof x === "string" ? x : JSON.stringify(x)
+        );
       }
       if (typeof candidate === "string") return [candidate];
-      // If it's an object, try to extract common structures
       if (typeof candidate === "object") {
+        const obj = candidate as Record<string, unknown>;
         // common shape: { detail: { logs: [...] } } or { detail: "message" }
-        if ((candidate as any).detail) {
-          const detail = (candidate as any).detail;
-          if (Array.isArray(detail.logs)) {
-            return detail.logs.map((x: any) => (typeof x === "string" ? x : JSON.stringify(x)));
+        if (obj.detail) {
+          const detail = obj.detail as unknown;
+          if (
+            typeof detail === "object" &&
+            detail !== null &&
+            Array.isArray((detail as any).logs)
+          ) {
+            const arr = (detail as any).logs as unknown[];
+            return arr.map((x: unknown): string =>
+              typeof x === "string" ? x : JSON.stringify(x)
+            );
           }
           if (typeof detail === "string") return [detail];
           return [JSON.stringify(detail)];
         }
-        // fallback: stringify
-        return [JSON.stringify(candidate)];
+        // fallback: stringify the object
+        return [JSON.stringify(obj)];
       }
       return [String(candidate)];
     } catch (e) {
@@ -85,9 +94,8 @@ export default function IngestPage() {
       const contentType = (resp.headers.get("content-type") || "").toLowerCase();
 
       if (!resp.ok) {
-        // try JSON parse first, else fallback to text
         if (contentType.includes("application/json")) {
-          let parsed;
+          let parsed: unknown;
           try {
             parsed = await resp.json();
           } catch (e) {
@@ -104,15 +112,14 @@ export default function IngestPage() {
 
       // OK path
       if (contentType.includes("application/json")) {
-        let data;
+        let data: unknown;
         try {
           data = await resp.json();
         } catch (e) {
           setLogs([`✅ Ingest completed but response JSON parse failed: ${String(e)}`]);
           return;
         }
-        // prefer logs array if present
-        const candidate = data?.logs ?? data;
+        const candidate = (data && typeof data === "object" && (data as any).logs) ? (data as any).logs : data;
         setLogs(normalizeToStrings(candidate));
       } else {
         const txt = await resp.text();
