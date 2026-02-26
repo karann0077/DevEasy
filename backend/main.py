@@ -1,44 +1,63 @@
 import os
-import traceback
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
-)
+            chunks = simple_chunk_text(text)
+            for i, chunk in enumerate(chunks):
+                chunk_id = str(uuid.uuid4())
+                metadata = {
+                    "repo": repo,
+                    "repo_url": req.repo_url,
+                    "path": rel_path,
+                    "chunk_index": i,
+                }
 
-class IngestRequest(BaseModel):
-    repo_url: str
+                # Call Gemini to get embedding (one-by-one as requested) with delay
+                try:
+                    vec = make_gemini_embedding(chunk)
+                except Exception as e:
+                    # If embedding fails, include the error and abort gracefully
+                    raise Exception(f"Embedding failed for {rel_path}@{i}: {e}")
 
-class IngestResponse(BaseModel):
-    status: str
-    logs: list
-    chunks_ingested: int = 0
+                # Ensure vector is exactly 768 dims
+                if len(vec) != 768:
+                    vec = vec[:768] + [0.0] * max(0, 768 - len(vec))
 
-@app.get("/health")
-def health():
-    return {"ok": True}
+                upsert_buffer.append({
+                    "id": chunk_id,
+                    "values": vec,
+                    "metadata": metadata,
+                })
+                chunks_count += 1
 
-@app.post("/api/ingest", response_model=IngestResponse)
-def ingest_repo(req: IngestRequest):
-    logs = ["[START] Ingestion called."]
-    try:
-        logs.append(f"[1/6] Parsing GitHub URL: {req.repo_url}")
+                # When buffer is large, upsert to Pinecone
+                if len(upsert_buffer) >= UPSERT_BATCH:
+                    logs.append(f"⤴️ Upserting batch of {len(upsert_buffer)} vectors to Pinecone")
+                    upsert_to_pinecone(PINECONE_INDEX, upsert_buffer, logs)
+                    upsert_buffer = []
 
-        # --- PLACEHOLDER LOGIC: You can try real logic, but for now, demo always returns error! ---
-        # Simulate an error if your keys are missing:
-        if not os.getenv("GEMINI_API_KEY") or not os.getenv("PINECONE_API_KEY"):
-            raise Exception("API KEY(S) MISSING: Set GEMINI_API_KEY and PINECONE_API_KEY in backend environment variables.")
+                # delay between embedding calls to respect rate limits
+                time.sleep(EMBED_DELAY)
 
-        # Simulate a successful run for demo only:
-        logs.append("[SUCCESS] Repo ingestion would succeed here (demo mode).")
-        return IngestResponse(status="success", logs=logs, chunks_ingested=123)
+        # final flush
+        if upsert_buffer:
+            logs.append(f"⤴️ Upserting final batch of {len(upsert_buffer)} vectors to Pinecone")
+            upsert_to_pinecone(PINECONE_INDEX, upsert_buffer, logs)
+
+        # cleanup
+        try:
+            shutil.rmtree(tmpdir)
+        except Exception:
+            pass
+
+        logs.append(f"🎉 Ingestion complete. Chunks ingested: {chunks_count}")
+        return IngestResponse(status="success", logs=logs, chunks_ingested=chunks_count)
 
     except Exception as e:
         logs.append(f"❌ ERROR: {str(e)}")
         logs.append(traceback.format_exc())
-        # Ensure logs always returned in HTTPException
+        # Always return logs to the client for easier debugging
         raise HTTPException(status_code=500, detail={"logs": logs, "error": str(e)})
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)), reload=False)
