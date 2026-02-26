@@ -2,14 +2,21 @@
 import { useState } from "react";
 import { Loader2, GitCommit } from "lucide-react";
 
-const LEFT_DIFF = [
+interface DiffLine {
+  text: string;
+  added?: boolean;
+  removed?: boolean;
+}
+
+// Fallback static diffs shown before any analysis
+const DEFAULT_LEFT_DIFF: DiffLine[] = [
   { text: "const db = new Postgres(" },
   { text: "  process.env.DATABASE_URL,", removed: true },
   { text: "  { max: 10 }", removed: true },
   { text: ");" },
 ];
 
-const RIGHT_DIFF = [
+const DEFAULT_RIGHT_DIFF: DiffLine[] = [
   { text: "const db = new Postgres(" },
   { text: "  {", added: true },
   { text: "    host: process.env.DB_HOST,", added: true },
@@ -19,23 +26,69 @@ const RIGHT_DIFF = [
   { text: ");" },
 ];
 
+function parseDiffToLines(diff: string): { left: DiffLine[]; right: DiffLine[] } {
+  const left: DiffLine[] = [];
+  const right: DiffLine[] = [];
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("-")) {
+      left.push({ text: line.substring(1), removed: true });
+    } else if (line.startsWith("+")) {
+      right.push({ text: line.substring(1), added: true });
+    } else {
+      left.push({ text: line });
+      right.push({ text: line });
+    }
+  }
+  return { left, right };
+}
+
 export default function DebuggerPage() {
   const [commitUrl, setCommitUrl] = useState("");
   const [loading, setLoading] = useState(false);
+  // FIX #7: Add state for API response data
+  const [blastRadius, setBlastRadius] = useState<string[]>([]);
+  const [prSummary, setPrSummary] = useState("");
+  const [diffText, setDiffText] = useState("");
+  const [analyzed, setAnalyzed] = useState(false);
+  const [error, setError] = useState("");
 
   const handleAnalyze = async () => {
     if (!commitUrl.trim()) return;
     setLoading(true);
+    setError("");
     try {
-      await fetch("/api/debug", {
+      const resp = await fetch("/api/debug", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ commit_url: commitUrl }),
       });
+      const data = await resp.json();
+      if (!resp.ok) {
+        const detail = data?.detail;
+        const msg = typeof detail === "string" ? detail : detail?.error || JSON.stringify(detail) || resp.statusText;
+        throw new Error(msg);
+      }
+      // FIX #7: Actually read and store the response
+      setBlastRadius(data.blast_radius || []);
+      setPrSummary(data.pr_summary || "");
+      setDiffText(data.diff || "");
+      setAnalyzed(true);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
     } finally {
       setLoading(false);
     }
   };
+
+  // Use parsed real diff if analyzed, otherwise show defaults
+  const { left: leftDiff, right: rightDiff } = analyzed && diffText
+    ? parseDiffToLines(diffText)
+    : { left: DEFAULT_LEFT_DIFF, right: DEFAULT_RIGHT_DIFF };
+
+  const analysisText = analyzed && prSummary
+    ? prSummary
+    : "The recent commit altered the database connection string format from a URI to an object block. However, the env-parser.js middleware was not updated to handle object inputs, causing connection timeouts on initialization.";
 
   return (
     <div className="min-h-screen bg-[#020617] p-8">
@@ -43,7 +96,7 @@ export default function DebuggerPage() {
         {/* Timeline / slider bar */}
         <div className="flex items-center gap-4 mb-6">
           <span className="bg-slate-800 border border-slate-700 text-slate-300 text-xs font-mono px-3 py-1.5 rounded-lg shrink-0">
-            HEAD~1 (8f4b2a)
+            HEAD~1
           </span>
 
           <div className="flex-1 relative h-2">
@@ -53,7 +106,7 @@ export default function DebuggerPage() {
           </div>
 
           <span className="bg-slate-800 border border-slate-700 text-slate-300 text-xs font-mono px-3 py-1.5 rounded-lg shrink-0">
-            Current (9c1d5e)
+            Current
           </span>
 
           <button
@@ -83,28 +136,38 @@ export default function DebuggerPage() {
           />
         </div>
 
+        {/* Error display */}
+        {error && (
+          <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 mb-6">
+            <p className="text-red-400 text-sm"><strong>Error:</strong> {error}</p>
+          </div>
+        )}
+
+        {/* Blast Radius */}
+        {analyzed && blastRadius.length > 0 && (
+          <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-5 mb-6">
+            <h2 className="text-cyan-400 font-bold text-base mb-2">Blast Radius ({blastRadius.length} files)</h2>
+            <div className="flex flex-wrap gap-2">
+              {blastRadius.map((file, i) => (
+                <span key={i} className="bg-slate-800 text-slate-300 text-xs font-mono px-2 py-1 rounded">
+                  {file}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* AI Root Cause Analysis */}
         <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-5 mb-6">
           <div className="flex items-start gap-3">
             <div className="text-orange-400 font-mono font-bold text-lg leading-none mt-0.5">&gt;_</div>
             <div>
               <h2 className="text-orange-400 font-bold text-base mb-2">AI Root Cause Analysis</h2>
-              <p className="text-slate-300 text-sm leading-relaxed">
-                The recent commit altered the database connection string format from a URI to an object
-                block. However, the{" "}
-                <code className="bg-slate-800 text-cyan-300 px-1.5 py-0.5 rounded text-xs font-mono">
-                  env-parser.js
-                </code>{" "}
-                middleware was not updated to handle object inputs, causing connection timeouts on
-                initialization.
-              </p>
+              <pre className="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap font-sans">
+                {analysisText}
+              </pre>
             </div>
           </div>
-        </div>
-
-        {/* File label */}
-        <div className="text-slate-500 text-xs font-mono uppercase tracking-widest mb-3">
-          File: config/database.js
         </div>
 
         {/* Split diff viewer */}
@@ -114,8 +177,8 @@ export default function DebuggerPage() {
             <div className="px-4 py-2.5 border-b border-slate-800 bg-slate-900/80">
               <span className="text-slate-300 text-xs font-semibold">Previous Working State</span>
             </div>
-            <div className="p-3 font-mono text-xs">
-              {LEFT_DIFF.map((line, i) => (
+            <div className="p-3 font-mono text-xs max-h-96 overflow-auto">
+              {leftDiff.map((line, i) => (
                 <div
                   key={i}
                   className={`px-2 py-0.5 rounded leading-5 ${
@@ -136,8 +199,8 @@ export default function DebuggerPage() {
             <div className="px-4 py-2.5 border-b border-slate-800 bg-slate-900/80">
               <span className="text-slate-300 text-xs font-semibold">Current Breaking State</span>
             </div>
-            <div className="p-3 font-mono text-xs">
-              {RIGHT_DIFF.map((line, i) => (
+            <div className="p-3 font-mono text-xs max-h-96 overflow-auto">
+              {rightDiff.map((line, i) => (
                 <div
                   key={i}
                   className={`px-2 py-0.5 rounded leading-5 ${
