@@ -10,11 +10,6 @@ const nextConfig = {
         source: "/api/:path*",
         destination: `${backendUrl}/api/:path*`,
       },
-      // FIX #9: Also proxy /health so api.ts health check works in dev
-      {
-        source: "/health",
-        destination: `${backendUrl}/health`,
-      },
     ];
   },
 };
