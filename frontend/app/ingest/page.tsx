@@ -79,8 +79,8 @@ export default function IngestPage() {
       clearInterval(stepInterval);
 
       if (!resp.ok) {
-        let err = await resp.json().catch(() => null);
-        let errLogs: string[] = err
+        const err = await resp.json().catch(() => null);
+        const errLogs: string[] = err
           ? extractLogs(err)
           : [`❌ Error: ${resp.statusText}`];
         setLogs(errLogs);
@@ -121,7 +121,7 @@ export default function IngestPage() {
         </div>
 
         {/* Input Card */}
-        <div className="glass rounded-2xl p-6 mb-6 border border-slate-800">
+        <div className="rounded-2xl p-6 mb-6 border border-slate-800 bg-slate-900/50 backdrop-blur-sm">
           <label className="block text-slate-300 font-semibold mb-3 flex items-center gap-2">
             <Github size={16} className="text-slate-400" />
             GitHub Repository URL
@@ -135,13 +135,13 @@ export default function IngestPage() {
                 e.key === "Enter" && !loading && handleIngest()
               }
               placeholder="https://github.com/owner/repository"
-              className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500/60 focus:shadow-cyan-glow transition-all"
+              className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 transition-all"
               disabled={loading}
             />
             <button
               onClick={handleIngest}
               disabled={loading || !repoUrl.trim()}
-              className="flex items-center gap-2 px-6 py-3 rounded-lg bg-gradient-to-r from-cyan-500 to-indigo-600 text-white font-semibold hover:from-cyan-400 hover:to-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-cyan-glow"
+              className="flex items-center gap-2 px-6 py-3 rounded-lg bg-gradient-to-r from-cyan-500 to-indigo-600 text-white font-semibold hover:from-cyan-400 hover:to-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-cyan-500/20"
             >
               {loading ? (
                 <Loader2 size={18} className="animate-spin" />
@@ -188,7 +188,7 @@ export default function IngestPage() {
 
         {/* Terminal Log Window */}
         {(logs.length > 0 || loading) && (
-          <div className="glass rounded-2xl border border-slate-800 overflow-hidden">
+          <div className="rounded-2xl border border-slate-800 overflow-hidden bg-slate-900/50 backdrop-blur-sm mb-6">
             {/* Terminal header */}
             <div className="flex items-center gap-2 px-4 py-3 bg-slate-900/80 border-b border-slate-800">
               <div className="w-3 h-3 rounded-full bg-red-500/80" />
@@ -223,7 +223,7 @@ export default function IngestPage() {
                 <div className="flex items-center gap-2 text-cyan-400 mt-1">
                   <Loader2 size={14} className="animate-spin" />
                   <span>Processing...</span>
-                  <span className="terminal-cursor">_</span>
+                  <span className="animate-pulse">_</span>
                 </div>
               )}
               <div ref={logsEndRef} />
@@ -231,9 +231,9 @@ export default function IngestPage() {
           </div>
         )}
 
-        {/* Result Banner */}
+        {/* Result Banner - Success */}
         {status === "success" && (
-          <div className="mt-6 flex items-center gap-4 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
+          <div className="mb-6 flex items-center gap-4 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
             <CheckCircle size={24} className="text-emerald-400 shrink-0" />
             <div>
               <div className="text-emerald-400 font-bold">Ingestion Complete!</div>
@@ -248,8 +248,9 @@ export default function IngestPage() {
           </div>
         )}
 
+        {/* Result Banner - Error */}
         {status === "error" && (
-          <div className="mt-6 flex items-center gap-4 p-4 rounded-xl bg-red-500/10 border border-red-500/30">
+          <div className="mb-6 flex items-center gap-4 p-4 rounded-xl bg-red-500/10 border border-red-500/30">
             <XCircle size={24} className="text-red-400 shrink-0" />
             <div>
               <div className="text-red-400 font-bold">Ingestion Failed</div>
@@ -261,7 +262,7 @@ export default function IngestPage() {
         )}
 
         {/* How it works */}
-        <div className="mt-8 glass rounded-2xl p-6 border border-slate-800">
+        <div className="rounded-2xl p-6 border border-slate-800 bg-slate-900/50 backdrop-blur-sm">
           <h3 className="text-white font-bold mb-4 flex items-center gap-2">
             <Zap size={16} className="text-cyan-400" />
             How the Pipeline Works
@@ -287,7 +288,7 @@ export default function IngestPage() {
                   "Vectors upserted in batches of 100 to Pinecone Serverless (AWS us-east-1, cosine metric).",
               },
             ].map(({ step, title, desc }) => (
-              <div key={step} className="bg-slate-900/50 rounded-xl p-4">
+              <div key={step} className="bg-slate-900/50 rounded-xl p-4 border border-slate-800/50">
                 <div className="w-8 h-8 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center font-bold text-sm mb-3">
                   {step}
                 </div>
