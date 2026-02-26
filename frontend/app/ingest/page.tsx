@@ -16,12 +16,34 @@ export default function IngestPage() {
   const [started, setStarted] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
-  // API base loaded from Vercel env var; fallback to relative path (dev)
   const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "";
 
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
+
+  // Helper: ensure we always return an array of strings
+  const normalizeToStrings = (candidate: any): string[] => {
+    try {
+      if (!candidate && candidate !== 0) return [];
+      if (Array.isArray(candidate)) return candidate.map((x) => (typeof x === "string" ? x : JSON.stringify(x)));
+      if (typeof candidate === "string") return [candidate];
+      // If it's an object, try to extract common structures
+      if (typeof candidate === "object") {
+        // common shape: { detail: { logs: [...] } } or { detail: "message" }
+        if (candidate.detail) {
+          if (Array.isArray(candidate.detail.logs)) return candidate.detail.logs.map((x) => (typeof x === "string" ? x : JSON.stringify(x)));
+          if (typeof candidate.detail === "string") return [candidate.detail];
+          return [JSON.stringify(candidate.detail)];
+        }
+        // fallback: stringify
+        return [JSON.stringify(candidate)];
+      }
+      return [String(candidate)];
+    } catch (e) {
+      return [`Error normalizing response: ${String(e)}`];
+    }
+  };
 
   const handleIngest = async () => {
     if (!repoUrl.trim()) return;
@@ -55,33 +77,42 @@ export default function IngestPage() {
         body: JSON.stringify({ repo_url: repoUrl }),
       });
 
-      const contentType = resp.headers.get("content-type") || "";
+      const contentType = (resp.headers.get("content-type") || "").toLowerCase();
 
-      // Non-OK responses: parse JSON when possible, otherwise show text
       if (!resp.ok) {
+        // try JSON parse first, else fallback to text
         if (contentType.includes("application/json")) {
-          const err = await resp.json();
-          const errLogs: string[] = err?.detail?.logs || [
-            `❌ Error: ${err?.detail || resp.statusText}`,
-          ];
-          setLogs(errLogs);
+          let parsed;
+          try {
+            parsed = await resp.json();
+          } catch (e) {
+            setLogs([`❌ Server returned invalid JSON: ${String(e)}`]);
+            return;
+          }
+          setLogs(normalizeToStrings(parsed));
         } else {
-          // Non-JSON (usually HTML): show first chunk so you can debug hosting/proxy issues
           const txt = await resp.text();
-          setLogs([`❌ Error (non-JSON) from server: ${txt.slice(0, 1500)}`]);
+          setLogs([`❌ Server error: ${txt.slice(0, 4000)}`]);
         }
         return;
       }
 
-      // OK but ensure it's JSON
-      if (!contentType.includes("application/json")) {
+      // OK path
+      if (contentType.includes("application/json")) {
+        let data;
+        try {
+          data = await resp.json();
+        } catch (e) {
+          setLogs([`✅ Ingest completed but response JSON parse failed: ${String(e)}`]);
+          return;
+        }
+        // prefer logs array if present
+        const candidate = data?.logs ?? data;
+        setLogs(normalizeToStrings(candidate));
+      } else {
         const txt = await resp.text();
-        setLogs([`❌ Expected JSON but received: ${txt.slice(0, 1500)}`]);
-        return;
+        setLogs([`✅ Ingest completed (non-JSON response): ${txt.slice(0, 4000)}`]);
       }
-
-      const data = await resp.json();
-      setLogs(data.logs || ["✅ Ingestion completed."]);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setLogs((prev) => [...prev, `❌ Network error: ${msg}`]);
