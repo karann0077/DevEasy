@@ -30,10 +30,11 @@ export default function IngestPage() {
   }, [logs]);
 
   // Helper for extracting logs from error JSON
+  // Helper for extracting logs from error JSON
   function extractLogs(candidate: any): string[] {
     if (candidate?.detail) {
       if (Array.isArray(candidate.detail.logs)) {
-        // Fix: explicitly type `x` for strict TS
+        // Explicitly typing 'x' as 'unknown' satisfies TS strict mode
         return candidate.detail.logs.map((x: unknown) =>
           typeof x === "string" ? x : JSON.stringify(x)
         );
@@ -302,3 +303,4 @@ export default function IngestPage() {
     </div>
   );
 }
+
