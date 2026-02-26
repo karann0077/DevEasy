@@ -16,6 +16,9 @@ export default function IngestPage() {
   const [started, setStarted] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
+  // API base loaded from Vercel env var; fallback to relative path (dev)
+  const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "";
+
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
@@ -44,28 +47,46 @@ export default function IngestPage() {
     }, 800);
 
     try {
-      const resp = await fetch("/api/ingest", {
+      const url = API_BASE ? `${API_BASE}/api/ingest` : "/api/ingest";
+
+      const resp = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ repo_url: repoUrl }),
       });
 
-      clearInterval(stepInterval);
+      const contentType = resp.headers.get("content-type") || "";
 
+      // Non-OK responses: parse JSON when possible, otherwise show text
       if (!resp.ok) {
-        const err = await resp.json();
-        const errLogs: string[] = err?.detail?.logs || [`❌ Error: ${err?.detail || resp.statusText}`];
-        setLogs(errLogs);
+        if (contentType.includes("application/json")) {
+          const err = await resp.json();
+          const errLogs: string[] = err?.detail?.logs || [
+            `❌ Error: ${err?.detail || resp.statusText}`,
+          ];
+          setLogs(errLogs);
+        } else {
+          // Non-JSON (usually HTML): show first chunk so you can debug hosting/proxy issues
+          const txt = await resp.text();
+          setLogs([`❌ Error (non-JSON) from server: ${txt.slice(0, 1500)}`]);
+        }
+        return;
+      }
+
+      // OK but ensure it's JSON
+      if (!contentType.includes("application/json")) {
+        const txt = await resp.text();
+        setLogs([`❌ Expected JSON but received: ${txt.slice(0, 1500)}`]);
         return;
       }
 
       const data = await resp.json();
       setLogs(data.logs || ["✅ Ingestion completed."]);
     } catch (e: unknown) {
-      clearInterval(stepInterval);
       const msg = e instanceof Error ? e.message : String(e);
       setLogs((prev) => [...prev, `❌ Network error: ${msg}`]);
     } finally {
+      clearInterval(stepInterval);
       setLoading(false);
     }
   };
@@ -104,11 +125,7 @@ export default function IngestPage() {
               disabled={loading || !repoUrl.trim()}
               className="flex items-center gap-2 px-5 py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-white font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             >
-              {loading ? (
-                <Loader2 size={16} className="animate-spin" />
-              ) : (
-                <Play size={16} />
-              )}
+              {loading ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
               {loading ? "Ingesting..." : "Ingest Codebase"}
             </button>
           </div>
