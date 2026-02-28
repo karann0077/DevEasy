@@ -13,14 +13,14 @@ import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from pinecone import Pinecone
 
-# IMPORTANT: Clear system proxies to avoid Render / environment network issues
-os.environ.pop('http_proxy', None)
-os.environ.pop('https_proxy', None)
-os.environ.pop('HTTP_PROXY', None)
-os.environ.pop('HTTPS_PROXY', None)
+# ---- CRITICAL: Clear proxies ----
+for key in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"]:
+    os.environ.pop(key, None)
 
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,254 +29,200 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -------------------- Pydantic models --------------------
+# ---------------- CONFIG ----------------
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+PINECONE_INDEX = os.getenv("PINECONE_INDEX")
+
+if not GEMINI_API_KEY:
+    raise Exception("GEMINI_API_KEY missing")
+
+if not PINECONE_API_KEY or not PINECONE_INDEX:
+    raise Exception("Pinecone env vars missing")
+
+pc = Pinecone(api_key=PINECONE_API_KEY)
+index = pc.Index(PINECONE_INDEX)
+
+ALLOWED_EXT = {".py", ".js", ".ts", ".jsx", ".tsx", ".cpp", ".c", ".h", ".md"}
+CHUNK_SIZE = 1200
+CHUNK_OVERLAP = 200
+EMBED_DELAY = 0.25
+BATCH_SIZE = 50
+
+# ---------------- MODELS ----------------
 class IngestRequest(BaseModel):
     repo_url: str
 
-class IngestResponse(BaseModel):
-    status: str
-    logs: List[str]
-    chunks_ingested: int
+class ExplainRequest(BaseModel):
+    query: str
 
-# -------------------- Config from env --------------------
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# ---------------- HELPERS ----------------
 
-# Support alternate names (some UIs use PINECONE_INDEX_NAME / PINECONE_REGION)
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_ENV = os.getenv("PINECONE_ENV") or os.getenv("PINECONE_REGION")
-PINECONE_INDEX = os.getenv("PINECONE_INDEX") or os.getenv("PINECONE_INDEX_NAME")
-
-# Basic validation (warnings only; final errors returned in responses)
-if not GEMINI_API_KEY:
-    print("WARNING: GEMINI_API_KEY is not set in environment")
-if not PINECONE_API_KEY or not PINECONE_ENV or not PINECONE_INDEX:
-    print("WARNING: Pinecone environment variables are not fully set (PINECONE_API_KEY, PINECONE_ENV, PINECONE_INDEX)")
-
-# -------------------- Utility helpers --------------------
-ALLOWED_EXT = {".py", ".js", ".ts", ".jsx", ".tsx", ".cpp", ".c", ".h", ".md", ".json", ".yaml", ".yml", ".html", ".css"}
-CHUNK_SIZE = 1200
-CHUNK_OVERLAP = 200
-EMBED_DELAY = 0.25  # seconds between embedding requests (as requested)
-UPSERT_BATCH = 100
-
-def parse_github_repo(url: str):
-    """Extract owner and repo from common GitHub repo URLs.
-    Returns (owner, repo) or None.
-    """
-    try:
-        parsed = urlparse(url)
-        if parsed.netloc not in ("github.com", "www.github.com"):
-            return None
-        parts = parsed.path.strip("/").split("/")
-        if len(parts) < 2:
-            return None
-        owner, repo = parts[0], parts[1]
-        if repo.endswith('.git'):
-            repo = repo[:-4]
-        return owner, repo
-    except Exception:
+def parse_repo(url: str):
+    parsed = urlparse(url)
+    parts = parsed.path.strip("/").split("/")
+    if len(parts) < 2:
         return None
+    return parts[0], parts[1].replace(".git", "")
 
-def simple_chunk_text(text: str, chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP):
-    """Chunk text into pieces of at most chunk_size with overlap."""
-    if not text:
-        return []
-    out = []
+
+def chunk_text(text):
+    chunks = []
     start = 0
-    length = len(text)
-    while start < length:
-        end = min(start + chunk_size, length)
-        out.append(text[start:end])
-        if end == length:
-            break
-        start = max(end - chunk_overlap, 0)
-    return out
+    while start < len(text):
+        end = min(start + CHUNK_SIZE, len(text))
+        chunks.append(text[start:end])
+        start = end - CHUNK_OVERLAP
+    return chunks
 
-def make_gemini_embedding(text: str):
-    """Call Gemini embedding REST endpoint. Returns a list[float]."""
-    if text is None or text.strip() == "":
-        return None
 
-    url = "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent"
-
-    headers = {"Content-Type": "application/json"}
-    params = None
-    if GEMINI_API_KEY:
-        # heuristic: attach key either as ?key= or as Bearer token
-        if GEMINI_API_KEY.startswith("AIza"):
-            params = {"key": GEMINI_API_KEY}
-        else:
-            headers["Authorization"] = f"Bearer {GEMINI_API_KEY}"
+def gemini_embed(text: str):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={GEMINI_API_KEY}"
 
     body = {
-        "content": text,
-        "mimeType": "text/plain",
-        "embeddingParams": {"outputDimensionality": 768}
+        "model": "models/text-embedding-004",
+        "content": {
+            "parts": [{"text": text}]
+        },
+        "outputDimensionality": 768
     }
 
-    resp = requests.post(url, headers=headers, params=params, json=body, timeout=60)
-    if resp.status_code != 200:
-        raise Exception(f"Gemini embedding failed: {resp.status_code} {resp.text}")
+    r = requests.post(url, json=body, timeout=60)
 
-    data = resp.json()
-    if isinstance(data, dict) and "embedding" in data and isinstance(data["embedding"], list):
-        vec = data["embedding"]
-    elif "embeddings" in data and isinstance(data["embeddings"], list) and len(data["embeddings"])>0:
-        vec = data["embeddings"][0].get("embedding")
-    else:
-        raise Exception(f"Unexpected Gemini embedding response shape: {json.dumps(data)[:400]}")
+    if r.status_code != 200:
+        raise Exception(f"Gemini error: {r.text}")
 
-    if not isinstance(vec, list):
-        raise Exception("Embedding vector not a list")
+    data = r.json()
 
-    vec = [float(x) for x in vec]
-    if len(vec) < 768:
-        raise Exception(f"Received embedding length {len(vec)} < 768")
-    return vec[:768]
+    vec = data["embedding"]["values"]
 
-# -------------------- Pinecone helper (best-effort) --------------------
-try:
-    import pinecone
-    PINECONE_AVAILABLE = True
-except Exception:
-    pinecone = None
-    PINECONE_AVAILABLE = False
+    # Ensure exactly 768
+    if len(vec) > 768:
+        vec = vec[:768]
+    elif len(vec) < 768:
+        vec += [0.0] * (768 - len(vec))
 
-def upsert_to_pinecone(index_name: str, vectors: List[dict], logs: List[str]):
-    """Upsert a batch of vectors to Pinecone. vectors = [{id, values, metadata}, ...]"""
-    if not PINECONE_AVAILABLE:
-        raise Exception("pinecone client library is not available in the environment")
+    return vec
 
-    if not PINECONE_API_KEY or not PINECONE_ENV:
-        raise Exception("Pinecone API env vars missing (PINECONE_API_KEY / PINECONE_ENV)")
 
-    try:
-        client = pinecone.Client(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
-        index = client.Index(index_name)
-    except Exception as e:
-        raise Exception(f"Failed to initialize Pinecone client: {e}")
+def gemini_generate(prompt: str):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
 
-    try:
-        index.upsert(vectors=vectors)
-    except TypeError:
-        tup = [(v['id'], v['values'], v.get('metadata')) for v in vectors]
-        index.upsert(tup)
-    except Exception as e:
-        raise
+    body = {
+        "contents": [
+            {
+                "parts": [{"text": prompt}]
+            }
+        ]
+    }
 
-# -------------------- Endpoint --------------------
-@app.post("/api/ingest", response_model=IngestResponse)
-def ingest_repo(req: IngestRequest):
+    r = requests.post(url, json=body, timeout=60)
+
+    if r.status_code != 200:
+        raise Exception(r.text)
+
+    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+
+# ---------------- INGEST ----------------
+
+@app.post("/api/ingest")
+def ingest(req: IngestRequest):
     logs = []
-    chunks_count = 0
+    total_chunks = 0
+
     try:
-        logs.append(f"🔎 Starting ingestion for {req.repo_url}")
-
-        parsed = parse_github_repo(req.repo_url)
-        if not parsed:
-            raise Exception("Could not parse GitHub repo URL. Use a URL like https://github.com/owner/repo")
-        owner, repo = parsed
+        owner, repo = parse_repo(req.repo_url)
         zip_url = f"https://api.github.com/repos/{owner}/{repo}/zipball"
-        logs.append(f"📦 Downloading zipball from: {zip_url}")
 
-        # Download zipball
-        with requests.get(zip_url, stream=True, timeout=60) as r:
-            if r.status_code != 200:
-                raise Exception(f"GitHub download failed: {r.status_code} {r.text}")
-            tmpdir = tempfile.mkdtemp(prefix="ingest_")
-            zpath = os.path.join(tmpdir, "repo.zip")
-            with open(zpath, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-        logs.append(f"✅ Downloaded zip to {zpath}")
+        logs.append("Downloading repository...")
+        r = requests.get(zip_url, timeout=60)
+        if r.status_code != 200:
+            raise Exception("GitHub download failed")
 
-        extract_dir = os.path.join(tmpdir, "extracted")
-        os.makedirs(extract_dir, exist_ok=True)
-        with zipfile.ZipFile(zpath, 'r') as z:
-            z.extractall(extract_dir)
-        logs.append(f"✅ Extracted zip to {extract_dir}")
+        tmp = tempfile.mkdtemp()
+        zip_path = os.path.join(tmp, "repo.zip")
 
-        # Walk files and collect valid code files
-        file_entries = []
-        for root, _, files in os.walk(extract_dir):
-            for fname in files:
-                ext = os.path.splitext(fname)[1].lower()
-                if ext in ALLOWED_EXT:
-                    abs_path = os.path.join(root, fname)
-                    rel_path = os.path.relpath(abs_path, extract_dir)
-                    file_entries.append((abs_path, rel_path))
-        logs.append(f"Found {len(file_entries)} files matching allowed extensions")
+        with open(zip_path, "wb") as f:
+            f.write(r.content)
 
-        if not file_entries:
-            raise Exception("No source files found in repo matching allowed extensions")
+        extract_path = os.path.join(tmp, "extracted")
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(extract_path)
 
-        upsert_buffer = []
+        vectors = []
 
-        for abs_path, rel_path in file_entries:
-            try:
-                with open(abs_path, 'r', encoding='utf-8') as f:
-                    text = f.read()
-            except UnicodeDecodeError:
-                try:
-                    with open(abs_path, 'r', encoding='latin-1') as f:
+        for root, _, files in os.walk(extract_path):
+            for file in files:
+                if os.path.splitext(file)[1] in ALLOWED_EXT:
+                    path = os.path.join(root, file)
+                    with open(path, "r", encoding="utf-8", errors="ignore") as f:
                         text = f.read()
-                except Exception:
-                    logs.append(f"⚠️ Skipping binary/unreadable file: {rel_path}")
-                    continue
-            except Exception as e:
-                logs.append(f"⚠️ Error reading {rel_path}: {e}")
-                continue
 
-            chunks = simple_chunk_text(text)
-            for i, chunk in enumerate(chunks):
-                chunk_id = str(uuid.uuid4())
-                metadata = {
-                    "repo": repo,
-                    "repo_url": req.repo_url,
-                    "path": rel_path,
-                    "chunk_index": i,
-                }
+                    for chunk in chunk_text(text):
+                        embedding = gemini_embed(chunk)
 
-                try:
-                    vec = make_gemini_embedding(chunk)
-                except Exception as e:
-                    raise Exception(f"Embedding failed for {rel_path}@{i}: {e}")
+                        vectors.append({
+                            "id": str(uuid.uuid4()),
+                            "values": embedding,
+                            "metadata": {
+                                "repo": repo,
+                                "path": file,
+                                "text": chunk
+                            }
+                        })
 
-                if len(vec) != 768:
-                    vec = vec[:768] + [0.0] * max(0, 768 - len(vec))
+                        total_chunks += 1
 
-                upsert_buffer.append({
-                    "id": chunk_id,
-                    "values": vec,
-                    "metadata": metadata,
-                })
-                chunks_count += 1
+                        if len(vectors) >= BATCH_SIZE:
+                            index.upsert(vectors)
+                            vectors = []
 
-                if len(upsert_buffer) >= UPSERT_BATCH:
-                    logs.append(f"⤴️ Upserting batch of {len(upsert_buffer)} vectors to Pinecone")
-                    upsert_to_pinecone(PINECONE_INDEX, upsert_buffer, logs)
-                    upsert_buffer = []
+                        time.sleep(EMBED_DELAY)
 
-                time.sleep(EMBED_DELAY)
+        if vectors:
+            index.upsert(vectors)
 
-        if upsert_buffer:
-            logs.append(f"⤴️ Upserting final batch of {len(upsert_buffer)} vectors to Pinecone")
-            upsert_to_pinecone(PINECONE_INDEX, upsert_buffer, logs)
+        shutil.rmtree(tmp)
 
-        try:
-            shutil.rmtree(tmpdir)
-        except Exception:
-            pass
-
-        logs.append(f"🎉 Ingestion complete. Chunks ingested: {chunks_count}")
-        return IngestResponse(status="success", logs=logs, chunks_ingested=chunks_count)
+        return {"status": "success", "chunks": total_chunks, "logs": logs}
 
     except Exception as e:
-        logs.append(f"❌ ERROR: {str(e)}")
-        logs.append(traceback.format_exc())
-        raise HTTPException(status_code=500, detail={"logs": logs, "error": str(e)})
+        return {"status": "error", "error": str(e), "logs": logs}
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)), reload=False)
+
+# ---------------- EXPLAIN (RAG) ----------------
+
+@app.post("/api/explain")
+def explain(req: ExplainRequest):
+    try:
+        query_vec = gemini_embed(req.query)
+
+        results = index.query(
+            vector=query_vec,
+            top_k=5,
+            include_metadata=True
+        )
+
+        context = "\n\n".join(
+            match["metadata"]["text"] for match in results["matches"]
+        )
+
+        prompt = f"""
+You are an architectural AI assistant.
+
+Code Context:
+{context}
+
+User Question:
+{req.query}
+
+Explain with architectural insights and system-wide impact.
+"""
+
+        answer = gemini_generate(prompt)
+
+        return {"answer": answer}
+
+    except Exception as e:
+        return {"error": str(e)}
