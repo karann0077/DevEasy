@@ -328,10 +328,15 @@ def ingest_repo(req: IngestRequest):
             tmpdir = tempfile.mkdtemp(prefix="ingest_")
             zpath = os.path.join(tmpdir, "repo.zip")
             with open(zpath, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-        logs.append(f"✅ Downloaded {len(r.content) / (1024*1024):.1f} MB")
+               # ✅ RIGHT: Track size while downloading
+downloaded_size = 0
+for chunk in r.iter_content(chunk_size=8192):
+    if chunk:
+        f.write(chunk)
+        downloaded_size += len(chunk)
+
+# Then use the tracked size
+logs.append(f"✅ Downloaded {downloaded_size / (1024*1024):.1f} MB")
 
         extract_dir = os.path.join(tmpdir, "extracted")
         os.makedirs(extract_dir, exist_ok=True)
