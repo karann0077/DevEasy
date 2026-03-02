@@ -1,125 +1,215 @@
 "use client";
 import { useState } from "react";
-import { GitBranch, AlertTriangle, FileText, Loader2, Zap } from "lucide-react";
+import { Bug, GitBranch, AlertTriangle, FileText, Loader2, Zap, Scissors } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 
-export default function DebuggerPage() {
-  const [commitUrl, setCommitUrl] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ blast_radius: string[]; pr_summary: string; diff: string } | null>(null);
-  const [error, setError] = useState("");
+function simpleMarkdownToHtml(md: string): string {
+  return md
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/```[\s\S]*?```/g, (m) => {
+      const code = m.slice(3, -3).replace(/^[^\n]*\n/, "");
+      return `<pre><code>${code}</code></pre>`;
+    })
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/^### (.+)$/gm, "<h3>$1</h3>")
+    .replace(/^## (.+)$/gm, "<h2>$1</h2>")
+    .replace(/^# (.+)$/gm, "<h1>$1</h1>")
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    .replace(/^- (.+)$/gm, "<li>$1</li>")
+    .replace(/(<li>.*<\/li>)/g, "<ul>$1</ul>")
+    .replace(/\n\n/g, "</p><p>");
+}
 
-  const handleDebug = async () => {
-    if (!commitUrl.trim() || loading) return;
-    setLoading(true);
-    setError("");
-    setResult(null);
+export default function DebuggerPage() {
+  // Log analysis
+  const [logText, setLogText] = useState("");
+  const [logResult, setLogResult] = useState("");
+  const [logLoading, setLogLoading] = useState(false);
+  const [logError, setLogError] = useState("");
+
+  // Commit analysis
+  const [commitUrl, setCommitUrl] = useState("");
+  const [commitResult, setCommitResult] = useState<{ blast_radius: string[]; pr_summary: string; diff: string } | null>(null);
+  const [commitLoading, setCommitLoading] = useState(false);
+  const [commitError, setCommitError] = useState("");
+
+  // Delta minimizer
+  const [deltaTrace, setDeltaTrace] = useState("");
+  const [deltaResult, setDeltaResult] = useState("");
+  const [deltaLoading, setDeltaLoading] = useState(false);
+  const [deltaError, setDeltaError] = useState("");
+
+  const analyzeLog = async () => {
+    if (!logText.trim() || logLoading) return;
+    setLogLoading(true);
+    setLogError("");
+    setLogResult("");
+    try {
+      const data = await apiFetch<{ answer: string }>(
+        "/api/explain",
+        { method: "POST", body: JSON.stringify({ query: `Analyze this runtime log/error trace and explain the root cause and how to fix it:\n\n${logText}` }) }
+      );
+      setLogResult(data.answer || "No analysis returned.");
+    } catch (e: unknown) {
+      setLogError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLogLoading(false);
+    }
+  };
+
+  const analyzeCommit = async () => {
+    if (!commitUrl.trim() || commitLoading) return;
+    setCommitLoading(true);
+    setCommitError("");
+    setCommitResult(null);
     try {
       const data = await apiFetch<{ blast_radius: string[]; pr_summary: string; diff: string }>(
         "/api/debug",
         { method: "POST", body: JSON.stringify({ commit_url: commitUrl }) }
       );
-      setResult(data);
+      setCommitResult(data);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
+      setCommitError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      setCommitLoading(false);
+    }
+  };
+
+  const minimizeDelta = async () => {
+    if (!deltaTrace.trim() || deltaLoading) return;
+    setDeltaLoading(true);
+    setDeltaError("");
+    setDeltaResult("");
+    try {
+      const data = await apiFetch<{ answer: string }>(
+        "/api/explain",
+        { method: "POST", body: JSON.stringify({ query: `Delta-minimize this error trace. Find the minimal reproduction case, identify the exact failing line, and suggest a fix:\n\n${deltaTrace}` }) }
+      );
+      setDeltaResult(data.answer || "No result returned.");
+    } catch (e: unknown) {
+      setDeltaError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeltaLoading(false);
     }
   };
 
   return (
     <div className="min-h-screen bg-[#020617] p-8">
       <div className="max-w-6xl mx-auto">
+        {/* Header */}
         <div className="flex items-center gap-3 mb-8">
-          <div className="p-2 rounded-lg bg-emerald-500/10">
-            <GitBranch size={24} className="text-emerald-400" />
+          <div className="p-2 rounded-xl bg-red-500/10">
+            <Bug size={24} className="text-red-400" />
           </div>
           <div>
-            <h1 className="text-3xl font-black text-white">Time-Travel Git Debugger</h1>
-            <p className="text-slate-400 text-sm mt-1">Analyze commits for blast radius and auto-generate PR summaries</p>
+            <h1 className="text-3xl font-black text-white">Debugging Hub</h1>
+            <p className="text-slate-400 text-sm mt-1">Multimodal debug tool: log analysis, commit inspection, delta minimization</p>
           </div>
         </div>
 
-        {/* Input */}
-        <div className="rounded-2xl p-6 mb-6 border border-slate-800 bg-slate-900/50 backdrop-blur-sm">
-          <label className="text-slate-300 font-semibold text-sm mb-3 flex items-center gap-2">
-            <GitBranch size={14} className="text-emerald-400" />
-            GitHub Commit URL
-          </label>
-          <div className="flex gap-3 mt-3">
+        {/* Top row: Log analysis + Commit analysis */}
+        <div className="grid grid-cols-2 gap-6 mb-6">
+          {/* Runtime Logs */}
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5">
+            <h2 className="text-white font-bold mb-3 flex items-center gap-2">
+              <FileText size={16} className="text-orange-400" /> Runtime Logs
+            </h2>
+            <textarea
+              value={logText}
+              onChange={(e) => setLogText(e.target.value)}
+              placeholder="Paste your runtime logs or error traces here..."
+              rows={7}
+              className="w-full bg-slate-950/60 border border-slate-700 rounded-lg px-3 py-2.5 text-slate-300 placeholder-slate-600 font-mono text-xs focus:outline-none focus:border-orange-500 resize-none"
+            />
+            <button
+              onClick={analyzeLog}
+              disabled={logLoading || !logText.trim()}
+              className="mt-3 flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-orange-500 to-red-600 text-white text-sm font-semibold hover:from-orange-400 hover:to-red-500 disabled:opacity-50 transition-all"
+            >
+              {logLoading ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
+              {logLoading ? "Analyzing..." : "Analyze with AI"}
+            </button>
+            {logError && <div className="mt-3 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">❌ {logError}</div>}
+            {logResult && (
+              <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/50 p-4 max-h-48 overflow-y-auto">
+                <div className="prose-dark text-sm" dangerouslySetInnerHTML={{ __html: simpleMarkdownToHtml(logResult) }} />
+              </div>
+            )}
+          </div>
+
+          {/* Commit Analysis */}
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5">
+            <h2 className="text-white font-bold mb-3 flex items-center gap-2">
+              <GitBranch size={16} className="text-emerald-400" /> Commit Analysis
+            </h2>
             <input
               value={commitUrl}
               onChange={(e) => setCommitUrl(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleDebug()}
-              placeholder="https://github.com/owner/repo/commit/abc123def"
-              className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 transition-all text-sm"
-              disabled={loading}
+              onKeyDown={(e) => e.key === "Enter" && analyzeCommit()}
+              placeholder="https://github.com/owner/repo/commit/abc123"
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-slate-100 placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500 transition-all"
             />
-            <button onClick={handleDebug} disabled={loading || !commitUrl.trim()}
-              className="flex items-center gap-2 px-6 py-3 rounded-lg bg-gradient-to-r from-emerald-500 to-cyan-600 text-white font-semibold text-sm hover:from-emerald-400 hover:to-cyan-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
-              {loading ? <Loader2 size={16} className="animate-spin" /> : <Zap size={16} />}
-              {loading ? "Analyzing..." : "Analyze Commit"}
+            <button
+              onClick={analyzeCommit}
+              disabled={commitLoading || !commitUrl.trim()}
+              className="mt-3 flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-emerald-500 to-cyan-600 text-white text-sm font-semibold hover:from-emerald-400 hover:to-cyan-500 disabled:opacity-50 transition-all"
+            >
+              {commitLoading ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
+              {commitLoading ? "Analyzing..." : "Analyze Commit"}
             </button>
+            {commitError && <div className="mt-3 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">❌ {commitError}</div>}
+            {commitLoading && (
+              <div className="mt-3 flex items-center gap-2 text-slate-400 text-sm">
+                <Loader2 size={14} className="animate-spin text-emerald-400" /> Fetching commit data...
+              </div>
+            )}
           </div>
         </div>
 
-        {error && (
-          <div className="mb-6 p-4 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-sm">❌ {error}</div>
-        )}
-
-        {loading && (
-          <div className="flex items-center gap-3 text-slate-400 p-4">
-            <Loader2 size={18} className="animate-spin text-emerald-400" />
-            <span>Fetching commit data and running blast radius analysis...</span>
-          </div>
-        )}
-
-        {result && (
-          <div className="grid grid-cols-2 gap-6">
-            {/* Left: Blast Radius + PR Summary */}
+        {/* Commit result */}
+        {commitResult && (
+          <div className="grid grid-cols-2 gap-6 mb-6">
             <div className="space-y-4">
               <div className="rounded-2xl border border-orange-500/30 bg-orange-500/5 p-5">
-                <div className="flex items-center gap-2 mb-4">
-                  <AlertTriangle size={18} className="text-orange-400" />
-                  <span className="text-orange-400 font-bold">Blast Radius Warning</span>
+                <div className="flex items-center gap-2 mb-3">
+                  <AlertTriangle size={16} className="text-orange-400" />
+                  <span className="text-orange-400 font-bold text-sm">Blast Radius</span>
                 </div>
-                <div className="space-y-2">
-                  {result.blast_radius.length === 0 && (
-                    <p className="text-slate-500 text-sm">No files changed detected.</p>
-                  )}
-                  {result.blast_radius.map((file) => (
-                    <div key={file} className="flex items-center gap-2 text-sm text-slate-300 bg-slate-900/60 rounded-lg px-3 py-2">
-                      <FileText size={12} className="text-orange-400 shrink-0" />
-                      <code className="font-mono text-xs">{file}</code>
-                    </div>
-                  ))}
-                </div>
+                {commitResult.blast_radius.length === 0 ? (
+                  <p className="text-slate-500 text-sm">No files changed detected.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {commitResult.blast_radius.map((f) => (
+                      <div key={f} className="flex items-center gap-2 text-sm text-slate-300 bg-slate-900/60 rounded-lg px-3 py-1.5">
+                        <FileText size={12} className="text-orange-400 shrink-0" />
+                        <code className="font-mono text-xs">{f}</code>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-
               <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5">
-                <div className="flex items-center gap-2 mb-4">
-                  <FileText size={16} className="text-cyan-400" />
-                  <span className="text-slate-300 font-bold text-sm">Auto-Generated PR Summary</span>
+                <div className="flex items-center gap-2 mb-3">
+                  <FileText size={14} className="text-cyan-400" />
+                  <span className="text-slate-300 font-bold text-sm">PR Summary</span>
                 </div>
-                <div className="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap font-mono bg-slate-950/50 rounded-lg p-4 max-h-64 overflow-y-auto">
-                  {result.pr_summary}
-                </div>
+                <div className="prose-dark text-sm max-h-48 overflow-y-auto" dangerouslySetInnerHTML={{ __html: simpleMarkdownToHtml(commitResult.pr_summary) }} />
               </div>
             </div>
-
-            {/* Right: Diff Viewer */}
             <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5">
-              <div className="flex items-center gap-2 mb-4">
-                <GitBranch size={16} className="text-emerald-400" />
+              <div className="flex items-center gap-2 mb-3">
+                <GitBranch size={14} className="text-emerald-400" />
                 <span className="text-slate-300 font-bold text-sm">Git Diff Viewer</span>
               </div>
-              <div className="font-mono text-xs bg-slate-950/80 rounded-lg p-4 max-h-96 overflow-y-auto">
-                {result.diff ? result.diff.split("\n").map((line, i) => (
+              <div className="font-mono text-xs bg-slate-950/80 rounded-lg p-4 max-h-80 overflow-y-auto">
+                {commitResult.diff ? commitResult.diff.split("\n").map((line, i) => (
                   <div key={i} className={`leading-relaxed ${
                     line.startsWith("+") && !line.startsWith("+++") ? "text-emerald-400 bg-emerald-500/5"
                     : line.startsWith("-") && !line.startsWith("---") ? "text-red-400 bg-red-500/5"
                     : line.startsWith("@@") ? "text-cyan-400"
-                    : line.startsWith("===") ? "text-slate-400 font-bold mt-2"
                     : "text-slate-400"
                   }`}>{line || " "}</div>
                 )) : <span className="text-slate-500">No diff data available.</span>}
@@ -128,13 +218,34 @@ export default function DebuggerPage() {
           </div>
         )}
 
-        {!result && !loading && !error && (
-          <div className="rounded-2xl border border-dashed border-slate-700 p-12 text-center">
-            <GitBranch size={40} className="text-slate-600 mx-auto mb-4" />
-            <p className="text-slate-500 text-sm">Enter a GitHub commit URL above to analyze its blast radius</p>
-            <p className="text-slate-600 text-xs mt-2">Example: https://github.com/vercel/next.js/commit/abc123</p>
-          </div>
-        )}
+        {/* Delta Minimizer */}
+        <div className="rounded-2xl border border-purple-500/20 bg-slate-900/50 p-5">
+          <h2 className="text-white font-bold mb-3 flex items-center gap-2">
+            <Scissors size={16} className="text-purple-400" /> Delta-Minimizer
+            <span className="text-slate-500 font-normal text-sm">— paste a large error trace to find the minimal reproduction case</span>
+          </h2>
+          <textarea
+            value={deltaTrace}
+            onChange={(e) => setDeltaTrace(e.target.value)}
+            placeholder="Paste a large error trace or stack dump here..."
+            rows={5}
+            className="w-full bg-slate-950/60 border border-slate-700 rounded-lg px-3 py-2.5 text-slate-300 placeholder-slate-600 font-mono text-xs focus:outline-none focus:border-purple-500 resize-none"
+          />
+          <button
+            onClick={minimizeDelta}
+            disabled={deltaLoading || !deltaTrace.trim()}
+            className="mt-3 flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-purple-500 to-indigo-600 text-white text-sm font-semibold hover:from-purple-400 hover:to-indigo-500 disabled:opacity-50 transition-all"
+          >
+            {deltaLoading ? <Loader2 size={14} className="animate-spin" /> : <Scissors size={14} />}
+            {deltaLoading ? "Minimizing..." : "Minimize"}
+          </button>
+          {deltaError && <div className="mt-3 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm">❌ {deltaError}</div>}
+          {deltaResult && (
+            <div className="mt-3 rounded-lg border border-slate-800 bg-slate-950/50 p-4 max-h-48 overflow-y-auto">
+              <div className="prose-dark text-sm" dangerouslySetInnerHTML={{ __html: simpleMarkdownToHtml(deltaResult) }} />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
