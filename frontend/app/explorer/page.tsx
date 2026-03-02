@@ -1,32 +1,49 @@
 "use client";
-import { useState } from "react";
-import { Search, Code, Loader2, ChevronRight, FileCode, Sparkles } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Globe, Loader2, Send, Sparkles } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { simpleMarkdownToHtml } from "@/lib/markdown";
 
-const MOCK_FILES = [
-  "src/main.py", "src/api/routes.py", "src/models/user.py",
-  "src/services/auth.py", "frontend/components/App.tsx",
-  "frontend/pages/index.tsx", "package.json", "requirements.txt",
+interface Message {
+  role: "user" | "ai";
+  content: string;
+}
+
+const PILLS = [
+  "Extracting JSDoc from auth.ts...",
+  "Mapping Prisma Schema...",
 ];
 
 export default function ExplorerPage() {
+  const [messages, setMessages] = useState<Message[]>([]);
   const [query, setQuery] = useState("");
-  const [answer, setAnswer] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [selectedFile, setSelectedFile] = useState(MOCK_FILES[0]);
+  const [repoUrl, setRepoUrl] = useState<string | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
-  const handleExplain = async () => {
+  useEffect(() => {
+    const stored = localStorage.getItem("synced_repo_url");
+    setRepoUrl(stored);
+  }, []);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
+
+  const handleAsk = async () => {
     if (!query.trim() || loading) return;
-    setLoading(true);
+    const userMsg = query.trim();
+    setQuery("");
     setError("");
-    setAnswer("");
+    setMessages((prev) => [...prev, { role: "user", content: userMsg }]);
+    setLoading(true);
     try {
       const data = await apiFetch<{ answer: string }>(
         "/api/explain",
-        { method: "POST", body: JSON.stringify({ query }) }
+        { method: "POST", body: JSON.stringify({ query: userMsg }) }
       );
-      setAnswer(data.answer || "No explanation returned.");
+      setMessages((prev) => [...prev, { role: "ai", content: data.answer || "No answer returned." }]);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -35,92 +52,96 @@ export default function ExplorerPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#020617] p-8">
-      <div className="max-w-6xl mx-auto">
-        <div className="flex items-center gap-3 mb-8">
-          <div className="p-2 rounded-lg bg-indigo-500/10">
-            <Code size={24} className="text-indigo-400" />
+    <div className="flex flex-col h-full bg-[#020617]">
+      {/* Header */}
+      <div className="px-8 pt-8 pb-4 shrink-0">
+        <div className="flex items-center gap-3 mb-3">
+          <div className="p-2 rounded-xl bg-cyan-500/10">
+            <Globe size={24} className="text-cyan-400" />
           </div>
           <div>
-            <h1 className="text-3xl font-black text-white">System-Aware Code Explorer</h1>
-            <p className="text-slate-400 text-sm mt-1">RAG-powered explanations using your ingested codebase</p>
+            <h1 className="text-3xl font-black text-white">Your Codebase, Demystified.</h1>
+            <p className="text-slate-400 text-sm mt-0.5">Interact with your repository naturally.</p>
           </div>
         </div>
-
-        <div className="grid grid-cols-3 gap-6">
-          {/* File Tree */}
-          <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4">
-            <div className="text-slate-400 text-xs font-semibold uppercase tracking-wider mb-3 flex items-center gap-2">
-              <FileCode size={12} /> Repository Files
-            </div>
-            <div className="space-y-1">
-              {MOCK_FILES.map((f) => (
-                <button key={f} onClick={() => setSelectedFile(f)}
-                  className={`w-full text-left text-xs px-3 py-2 rounded-lg flex items-center gap-2 transition-colors ${
-                    selectedFile === f ? "bg-cyan-500/10 text-cyan-400" : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-                  }`}>
-                  <ChevronRight size={12} />
-                  {f}
-                </button>
-              ))}
-            </div>
+        <div className="flex gap-2 mt-3">
+          {PILLS.map((p) => (
+            <span key={p} className="px-3 py-1 rounded-full bg-slate-800 border border-slate-700 text-slate-400 text-xs">
+              {p}
+            </span>
+          ))}
+        </div>
+        {!repoUrl && (
+          <div className="mt-3 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs">
+            No repo synced yet — paste a GitHub URL and click &quot;Sync Repo&quot; in the header first.
           </div>
+        )}
+        {repoUrl && (
+          <div className="mt-3 p-3 rounded-lg bg-slate-900/50 border border-slate-800 text-slate-400 text-xs">
+            Repo: <span className="text-cyan-400">{repoUrl}</span>
+          </div>
+        )}
+      </div>
 
-          {/* Main Panel */}
-          <div className="col-span-2 space-y-4">
-            {/* Query Input */}
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5">
-              <label className="text-slate-300 font-semibold text-sm mb-3 flex items-center gap-2">
-                <Search size={14} className="text-indigo-400" />
-                Ask about the codebase
-              </label>
-              <div className="flex gap-3 mt-3">
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleExplain()}
-                  placeholder="e.g. Explain the authentication flow, How does the API route work?"
-                  className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 transition-all text-sm"
-                  disabled={loading}
+      {/* Chat messages */}
+      <div className="flex-1 overflow-y-auto px-8 py-2 space-y-4">
+        {messages.length === 0 && !loading && (
+          <div className="flex flex-col items-center justify-center h-full text-center py-12">
+            <Sparkles size={36} className="text-slate-700 mb-3" />
+            <p className="text-slate-500 text-sm">Ask how the routing works, or where the DB schema is defined!</p>
+          </div>
+        )}
+        {messages.map((msg, i) => (
+          <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+            {msg.role === "user" ? (
+              <div className="max-w-[70%] px-4 py-3 rounded-2xl bg-gradient-to-r from-cyan-500/20 to-indigo-600/20 border border-cyan-500/30 text-slate-100 text-sm">
+                {msg.content}
+              </div>
+            ) : (
+              <div className="max-w-[80%] px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-800">
+                <div
+                  className="prose-dark text-sm text-slate-300 leading-relaxed"
+                  dangerouslySetInnerHTML={{ __html: simpleMarkdownToHtml(msg.content) }}
                 />
-                <button onClick={handleExplain} disabled={loading || !query.trim()}
-                  className="flex items-center gap-2 px-5 py-3 rounded-lg bg-gradient-to-r from-indigo-500 to-purple-600 text-white font-semibold text-sm hover:from-indigo-400 hover:to-purple-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
-                  {loading ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
-                  {loading ? "Thinking..." : "Explain with RAG"}
-                </button>
-              </div>
-            </div>
-
-            {/* Answer */}
-            {(answer || loading || error) && (
-              <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-5">
-                <div className="text-slate-300 font-semibold text-sm mb-3 flex items-center gap-2">
-                  <Sparkles size={14} className="text-indigo-400" />
-                  AI Explanation
-                </div>
-                {loading && (
-                  <div className="flex items-center gap-2 text-indigo-400">
-                    <Loader2 size={16} className="animate-spin" />
-                    <span className="text-sm">Searching codebase and generating explanation...</span>
-                  </div>
-                )}
-                {error && <div className="text-red-400 text-sm">❌ {error}</div>}
-                {answer && (
-                  <div className="text-slate-300 text-sm leading-relaxed whitespace-pre-wrap font-mono bg-slate-950/50 rounded-lg p-4 max-h-96 overflow-y-auto">
-                    {answer}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {!answer && !loading && !error && (
-              <div className="rounded-2xl border border-dashed border-slate-700 p-8 text-center">
-                <Sparkles size={32} className="text-slate-600 mx-auto mb-3" />
-                <p className="text-slate-500 text-sm">Ask a question above to get RAG-powered code explanations</p>
-                <p className="text-slate-600 text-xs mt-2">Make sure you have ingested a repo first</p>
               </div>
             )}
           </div>
+        ))}
+        {loading && (
+          <div className="flex justify-start">
+            <div className="px-4 py-3 rounded-2xl bg-slate-900/60 border border-slate-800 flex items-center gap-2 text-slate-400 text-sm">
+              <Loader2 size={14} className="animate-spin text-cyan-400" />
+              Thinking...
+            </div>
+          </div>
+        )}
+        {error && (
+          <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
+            ❌ {error}
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Input bar */}
+      <div className="px-8 py-4 shrink-0 border-t border-slate-800 bg-slate-950/50">
+        <div className="flex gap-3">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleAsk()}
+            placeholder="Ask the AI anything about the synced codebase..."
+            className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 transition-all text-sm"
+            disabled={loading}
+          />
+          <button
+            onClick={handleAsk}
+            disabled={loading || !query.trim()}
+            className="flex items-center gap-2 px-5 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-600 text-white font-semibold text-sm hover:from-cyan-400 hover:to-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+          >
+            {loading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+            Ask AI
+          </button>
         </div>
       </div>
     </div>
