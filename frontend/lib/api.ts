@@ -20,7 +20,12 @@ export async function apiFetch<T = any>(
       const err = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(typeof err.detail === "string" ? err.detail : JSON.stringify(err.detail));
     }
-    return res.json();
+    const text = await res.text();
+    if (!text.trim()) return {} as T;
+    return JSON.parse(text) as T;
+  } catch (err: any) {
+    if (err.name === "AbortError") throw new Error(`Request timed out after ${timeoutMs / 1000}s`);
+    throw err;
   } finally {
     clearTimeout(timeoutId);
   }

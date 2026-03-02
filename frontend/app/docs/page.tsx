@@ -2,28 +2,9 @@
 import { useState } from "react";
 import { BookOpen, Loader2, Download, Play, ChevronDown, ChevronRight } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { simpleMarkdownToHtml } from "@/lib/markdown";
 
-function simpleMarkdownToHtml(md: string): string {
-  return md
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/```[\s\S]*?```/g, (m) => {
-      const code = m.slice(3, -3).replace(/^[^\n]*\n/, "");
-      return `<pre><code>${code}</code></pre>`;
-    })
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/^### (.+)$/gm, "<h3>$1</h3>")
-    .replace(/^## (.+)$/gm, "<h2>$1</h2>")
-    .replace(/^# (.+)$/gm, "<h1>$1</h1>")
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*(.+?)\*/g, "<em>$1</em>")
-    .replace(/^- (.+)$/gm, "<li>$1</li>")
-    .replace(/(<li>.*<\/li>)/g, "<ul>$1</ul>")
-    .replace(/\n\n/g, "</p><p>");
-}
-
-type Method = "GET" | "POST" | "PUT" | "DELETE";
+type Method = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
 interface ApiRoute {
   method: Method;
   path: string;
@@ -36,6 +17,7 @@ const METHOD_COLORS: Record<Method, string> = {
   POST: "bg-blue-500/20 text-blue-400 border border-blue-500/40",
   PUT: "bg-yellow-500/20 text-yellow-400 border border-yellow-500/40",
   DELETE: "bg-red-500/20 text-red-400 border border-red-500/40",
+  PATCH: "bg-orange-500/20 text-orange-400 border border-orange-500/40",
 };
 
 const TABS = ["API (Swagger)", "Components", "CLI & Config", "Generated Site"] as const;
@@ -87,7 +69,7 @@ function ApiTab() {
 
   const downloadPostman = () => {
     const collection = {
-      info: { name: "DevEasy API", schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" },
+      info: { name: "InnovateBHARAT API", schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" },
       item: routes.map((r) => ({
         name: `${r.method} ${r.path}`,
         request: { method: r.method, url: { raw: `{{base_url}}${r.path}`, host: ["{{base_url}}"], path: r.path.split("/").filter(Boolean) } },
