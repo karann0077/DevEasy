@@ -123,7 +123,7 @@ def make_gemini_embedding(text: str) -> list:
         raise Exception("GEMINI_API_KEY is not set")
 
     # ✅ CORRECT URL - v1beta with model in path
-    url = "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent"
+    url = "https://generativelanguage.googleapis.com/v1/models/text-embedding-004:embedContent"
     
     # ✅ CORRECT: Always use ?key= param for Gemini API keys (they start with AIza)
     params = {"key": GEMINI_API_KEY}
@@ -176,7 +176,7 @@ def make_gemini_generate(prompt: str) -> str:
     if not GEMINI_API_KEY:
         raise Exception("GEMINI_API_KEY is not set")
 
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+    url = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent"
     params = {"key": GEMINI_API_KEY}
     headers = {"Content-Type": "application/json"}
 
