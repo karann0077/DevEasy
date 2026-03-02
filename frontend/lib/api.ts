@@ -1,36 +1,14 @@
 // frontend/lib/api.ts
-// Production-ready API client for development and production
+// Production-ready API client
 
-/**
- * Get API base URL based on environment
- * - Development: http://localhost:8000 (local backend)
- * - Production: https://your-render-url.onrender.com (Render backend)
- */
 function getApiBaseUrl(): string {
-  // Check for explicit environment variable first
   const envUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
   if (envUrl && envUrl.trim()) {
-    return envUrl.replace(/\/+$/, ""); // Remove trailing slashes
+    return envUrl.replace(/\/+$/, "");
   }
-
-  // Fallback for development
-  if (typeof window === "undefined") {
-    // Server-side (SSR): use placeholder, should never be called
-    return "http://localhost:8000";
-  }
-
-  // Client-side development: use localhost
-  const isDevelopment =
-    process.env.NODE_ENV === "development" ||
-    !process.env.NEXT_PUBLIC_ENVIRONMENT ||
-    process.env.NEXT_PUBLIC_ENVIRONMENT === "development";
-
-  if (isDevelopment) {
-    return "http://localhost:8000";
-  }
-
-  // Production fallback (should not reach here if env vars are set)
-  return "https://api.innovate-bharat.com";
+  // In production on Vercel, this MUST be set via NEXT_PUBLIC_API_BASE_URL
+  // pointing to your Render backend, e.g. https://deveasy.onrender.com
+  return "http://localhost:8000";
 }
 
 function joinPath(base: string, path: string): string {
@@ -38,13 +16,6 @@ function joinPath(base: string, path: string): string {
   return base.replace(/\/+$/, "") + path;
 }
 
-/**
- * apiFetch - Production-ready wrapper around fetch
- * - Automatically uses correct API base URL
- * - Enforces 120s timeout
- * - Proper error handling with logging
- * - Works in development and production
- */
 export async function apiFetch<T = any>(
   path: string,
   options: RequestInit = {},
@@ -53,7 +24,6 @@ export async function apiFetch<T = any>(
   const API_BASE = getApiBaseUrl();
   const url = joinPath(API_BASE, path);
 
-  // Log in development
   if (process.env.NODE_ENV === "development") {
     console.log(`[API] ${options.method || "GET"} ${url}`);
   }
@@ -65,14 +35,21 @@ export async function apiFetch<T = any>(
     },
     ...options,
   }).then(async (res) => {
-    const text = await res.text().catch(() => "");
-    const data = text ? JSON.parse(text).catch(() => null) : null;
+    // ✅ FIX: JSON.parse is synchronous - it does NOT return a Promise
+    // The old code had `.catch()` on it which threw a TypeError crashing the app
+    let data: any = null;
+    try {
+      const text = await res.text();
+      if (text) data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
 
     if (!res.ok) {
       const detail = data?.detail ?? data ?? res.statusText;
-      const errorMsg = typeof detail === "string" ? detail : JSON.stringify(detail);
-      
-      // Log errors in development
+      const errorMsg =
+        typeof detail === "string" ? detail : JSON.stringify(detail);
+
       if (process.env.NODE_ENV === "development") {
         console.error(`[API] Error ${res.status}:`, errorMsg);
       }
@@ -85,17 +62,13 @@ export async function apiFetch<T = any>(
 
   const timeoutPromise = new Promise<never>((_, reject) =>
     setTimeout(() => {
-      console.error(`[API] Timeout after ${timeoutMs}ms on ${path}`);
-      reject(new Error("Request timed out"));
+      reject(new Error("Request timed out after " + timeoutMs / 1000 + "s"));
     }, timeoutMs)
   );
 
-  return Promise.race([fetchPromise, timeoutPromise]) as Promise<T>;
+  return Promise.race([fetchPromise, timeoutPromise]);
 }
 
-/**
- * Get the current API base URL (useful for debugging)
- */
 export function getApiUrl(): string {
   return getApiBaseUrl();
 }
