@@ -52,35 +52,6 @@ export default function Sidebar() {
     </aside>
   );
 }
-```
 
----
 
-## Now: Exact Steps to Fix in 10 Minutes
 
-**1. Replace these files in your GitHub repo:**
-
-| File to replace | With |
-|---|---|
-| `frontend/lib/api.ts` | code above |
-| `frontend/app/page.tsx` | code above |
-| `frontend/app/ingest/page.tsx` | code above |
-| `frontend/app/explorer/page.tsx` | code above |
-| `frontend/app/canvas/page.tsx` | code above |
-| `frontend/app/debugger/page.tsx` | code above |
-| `frontend/app/docs/page.tsx` | code above |
-| `frontend/components/Sidebar.tsx` | code above |
-| `backend/main.py` | from previous message |
-| `backend/requirements.txt` | from previous message |
-
-**2. In Vercel → Settings → Environment Variables, add:**
-```
-NEXT_PUBLIC_API_BASE_URL = https://YOUR-RENDER-APP.onrender.com
-```
-
-**3. In Render → Environment, add:**
-```
-GEMINI_API_KEY     = AIza...
-PINECONE_API_KEY   = ...
-PINECONE_INDEX     = your-index-name
-PINECONE_HOST      = https://xxx.svc.pinecone.io
