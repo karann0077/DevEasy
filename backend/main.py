@@ -112,7 +112,7 @@ def make_gemini_embedding(text: str) -> list:
     Generate a 768-dim embedding using Gemini text-embedding-004 REST API.
     
     FIX: The correct URL format is:
-      POST https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=API_KEY
+      POST https://generativelanguage.googleapis.com/v1/models/text-embedding-004:embedContent?key=API_KEY
     
     The body must include the 'model' field alongside 'content' and 'outputDimensionality'.
     """
