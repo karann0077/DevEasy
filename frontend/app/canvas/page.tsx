@@ -25,7 +25,7 @@ export default function CanvasPage() {
   const insights: Record<string, string> = {
     client: "**Frontend (Next.js)**\nHandles all user interactions. Communicates with the FastAPI backend via REST calls. Displays real-time ingestion logs, the architecture canvas, code explorer, and git debugger.",
     api: "**Backend (FastAPI)**\nThe core engine. Handles /api/ingest, /api/explain, /api/debug, /api/architecture. Orchestrates calls to Gemini for embeddings and generation, and to Pinecone for vector storage and retrieval.",
-    gemini: "**Google Gemini**\ntext-embedding-004 model generates 768-dimension vectors for code chunks. gemini-1.5-flash handles RAG generation — constructing answers from retrieved code context.",
+    gemini: "**Google Gemini**\ngemini-embedding-001 model generates 3072-dimension vectors for code chunks. gemini-2.0-flash handles RAG generation — constructing answers from retrieved code context.",
     pinecone: "**Pinecone Vector DB**\nServerless vector database storing all code chunk embeddings. Queried at retrieval time to find the top-5 most semantically similar chunks to any user query.",
     github: "**GitHub**\nSource of truth for all code. Repos downloaded via the Zipball API. Commit data fetched for the git debugger blast radius analysis.",
   };

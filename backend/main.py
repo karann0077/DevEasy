@@ -79,6 +79,7 @@ print(f"PINECONE_INDEX: {PINECONE_INDEX}")
 ALLOWED_EXT = {".py", ".js", ".ts", ".jsx", ".tsx", ".cpp", ".c", ".h", ".md", ".json", ".yaml", ".yml", ".html", ".css"}
 CHUNK_SIZE = 1200
 CHUNK_OVERLAP = 200
+EMBED_DIM = 3072
 EMBED_DELAY = 0.3
 UPSERT_BATCH = 100
 
@@ -109,11 +110,11 @@ def parse_github_repo(url: str):
 
 def make_gemini_embedding(text: str) -> list:
     """
-    Generate a 768-dim embedding using Gemini text-embedding-004 REST API.
-    
-    FIX: The correct URL format is:
-      POST https://generativelanguage.googleapis.com/v1/models/text-embedding-004:embedContent?key=API_KEY
-    
+    Generate a 3072-dim embedding using Gemini gemini-embedding-001 REST API.
+
+    Endpoint:
+      POST https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=API_KEY
+
     The body must include the 'model' field alongside 'content' and 'outputDimensionality'.
     """
     if not text or not text.strip():
@@ -122,20 +123,16 @@ def make_gemini_embedding(text: str) -> list:
     if not GEMINI_API_KEY:
         raise Exception("GEMINI_API_KEY is not set")
 
-    # ✅ CORRECT URL - v1beta with model in path
-    url = "https://generativelanguage.googleapis.com/v1/models/text-embedding-004:embedContent"
-    
-    # ✅ CORRECT: Always use ?key= param for Gemini API keys (they start with AIza)
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent"
     params = {"key": GEMINI_API_KEY}
     headers = {"Content-Type": "application/json"}
 
-    # ✅ CORRECT body format - must include 'model' field
     body = {
-        "model": "models/text-embedding-004",
+        "model": "models/gemini-embedding-001",
         "content": {
             "parts": [{"text": text}]
         },
-        "outputDimensionality": 768
+        "outputDimensionality": EMBED_DIM
     }
 
     try:
@@ -157,11 +154,11 @@ def make_gemini_embedding(text: str) -> list:
 
         vec = [float(x) for x in vec]
 
-        # Ensure exactly 768 dimensions
-        if len(vec) > 768:
-            vec = vec[:768]
-        elif len(vec) < 768:
-            vec = vec + [0.0] * (768 - len(vec))
+        # Ensure exactly 3072 dimensions
+        if len(vec) > EMBED_DIM:
+            vec = vec[:EMBED_DIM]
+        elif len(vec) < EMBED_DIM:
+            vec = vec + [0.0] * (EMBED_DIM - len(vec))
 
         return vec
 
@@ -172,11 +169,11 @@ def make_gemini_embedding(text: str) -> list:
 
 
 def make_gemini_generate(prompt: str) -> str:
-    """Generate text using Gemini 1.5 Flash."""
+    """Generate text using Gemini 2.0 Flash."""
     if not GEMINI_API_KEY:
         raise Exception("GEMINI_API_KEY is not set")
 
-    url = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent"
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
     params = {"key": GEMINI_API_KEY}
     headers = {"Content-Type": "application/json"}
 
@@ -282,6 +279,7 @@ def ingest_repo(req: IngestRequest):
 
     try:
         logs.append(f"🔎 Starting ingestion for {req.repo_url}")
+        logs.append(f"ℹ️ Using gemini-embedding-001 (3072-dim). Ensure your Pinecone index dimension is 3072.")
 
         parsed = parse_github_repo(req.repo_url)
         if not parsed:

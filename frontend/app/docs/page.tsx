@@ -23,7 +23,7 @@ export default function DocsPage() {
             },
             {
               icon: Terminal, color: "cyan", title: "1. Ingest a Repository",
-              content: "Go to Project Hub → paste any public GitHub URL → click Start Ingestion.\n\nThe pipeline downloads the repo, chunks all code files, generates 768-dim embeddings via Gemini, and stores them in Pinecone.\n\nThis enables RAG queries across your entire codebase."
+              content: "Go to Project Hub → paste any public GitHub URL → click Start Ingestion.\n\nThe pipeline downloads the repo, chunks all code files, generates 3072-dim embeddings via the gemini-embedding-001 model, and stores them in Pinecone.\n\nThis enables RAG queries across your entire codebase."
             },
             {
               icon: Map, color: "purple", title: "2. Zenith Canvas",

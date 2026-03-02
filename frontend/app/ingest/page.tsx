@@ -39,7 +39,7 @@ export default function IngestPage() {
       "⬇️  Downloading repository zip...",
       "📂 Extracting code files...",
       "✂️  Chunking with RecursiveCharacterTextSplitter...",
-      "🧠 Generating 768-dim embeddings via Gemini...",
+      "🧠 Generating 3072-dim embeddings via Gemini...",
       "📡 Upserting vectors to Pinecone...",
     ];
     let i = 0;
@@ -136,7 +136,7 @@ export default function IngestPage() {
           {[
             { label: "Chunk Size", value: "1,200 tokens" },
             { label: "Overlap", value: "200 tokens" },
-            { label: "Embed Dim", value: "768-dim" },
+            { label: "Embed Dim", value: "3072-dim" },
             { label: "Batch Size", value: "100 vectors" },
           ].map(({ label, value }) => (
             <div key={label} className="bg-slate-900/50 border border-slate-800 rounded-lg p-3 text-center">
@@ -209,7 +209,7 @@ export default function IngestPage() {
           <div className="grid md:grid-cols-3 gap-4 text-sm">
             {[
               { step: "1", title: "Download & Extract", desc: "Fetches repo via GitHub Zipball API. Filters .py, .js, .ts, .tsx, .md and more." },
-              { step: "2", title: "Chunk & Embed", desc: "RecursiveCharacterTextSplitter + Gemini text-embedding-004 → 768-dim vectors." },
+              { step: "2", title: "Chunk & Embed", desc: "RecursiveCharacterTextSplitter + gemini-embedding-001 → 3072-dim vectors." },
               { step: "3", title: "Store in Pinecone", desc: "Vectors upserted in batches of 100 to Pinecone Serverless (cosine metric)." },
             ].map(({ step, title, desc }) => (
               <div key={step} className="bg-slate-900/50 rounded-xl p-4 border border-slate-800/50">
