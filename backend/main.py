@@ -144,9 +144,9 @@ def make_gemini_embedding(text: str) -> list:
         if resp.status_code != 200:
             error_detail = ""
             try:
-                error_detail = resp.json().get("error", {}).get("message", resp.text[:200])
+                error_detail = resp.json().get("error", {}).get("message", resp.text)
             except:
-                error_detail = resp.text[:200]
+                error_detail = resp.text
             raise Exception(f"Gemini API error {resp.status_code}: {error_detail}")
 
         data = resp.json()
