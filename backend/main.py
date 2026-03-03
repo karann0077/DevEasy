@@ -65,6 +65,7 @@ class ArchitectureResponse(BaseModel):
 
 # Environment Variables
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_HOST = os.getenv("PINECONE_HOST")
 PINECONE_INDEX = os.getenv("PINECONE_INDEX") or os.getenv("PINECONE_INDEX_NAME")
@@ -72,28 +73,25 @@ PORT = int(os.getenv("PORT", 8000))
 
 # Startup logs
 print(f"GEMINI_API_KEY set: {bool(GEMINI_API_KEY)}")
+print(f"GROQ_API_KEY set: {bool(GROQ_API_KEY)}")
 print(f"PINECONE_API_KEY set: {bool(PINECONE_API_KEY)}")
 print(f"PINECONE_HOST: {PINECONE_HOST}")
 print(f"PINECONE_INDEX: {PINECONE_INDEX}")
 
 # Constants
-# FIX: Reduced to high-value code file types only (removes JSON/YAML/HTML/CSS/C/C++ noise)
 ALLOWED_EXT = {".py", ".js", ".ts", ".jsx", ".tsx", ".md"}
-# FIX: Larger chunks = fewer total API calls during ingestion
 CHUNK_SIZE = 2000
 CHUNK_OVERLAP = 150
 EMBED_DIM = 3072
-# FIX: Delay is now between BATCHES (not individual chunks)
 EMBED_DELAY = 1.5
 UPSERT_BATCH = 100
-# FIX: Number of chunks per batchEmbedContents call (max 100, keep at 50 for safety)
 EMBED_BATCH_SIZE = 50
 
-# Generation models ordered by free-tier quota (most -> least)
-GENERATION_MODELS = [
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-8b",
-    "gemini-2.0-flash",
+# Groq generation models ordered by preference (fast + generous free tier)
+GROQ_GENERATION_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "gemma2-9b-it",
 ]
 
 # Text Splitter
@@ -217,77 +215,53 @@ def make_gemini_embedding(text: str) -> list:
         raise Exception(f"Embedding error: {str(e)}")
 
 
-def _call_gemini_model(model: str, prompt: str) -> str:
-    """Call a specific Gemini model. Raises QUOTA_EXCEEDED:<seconds> on 429."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    params = {"key": GEMINI_API_KEY}
-    headers = {"Content-Type": "application/json"}
-    body = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 2048}
-    }
-
-    resp = requests.post(url, headers=headers, params=params, json=body, timeout=60)
-
-    if resp.status_code == 429:
-        wait_secs = 20
-        try:
-            msg = resp.json().get("error", {}).get("message", "")
-            match = re.search(r"retry in (\d+(?:\.\d+)?)s", msg, re.IGNORECASE)
-            if match:
-                wait_secs = int(float(match.group(1))) + 1
-        except Exception:
-            pass
-        raise Exception(f"QUOTA_EXCEEDED:{wait_secs}")
-
-    if resp.status_code != 200:
-        error_detail = ""
-        try:
-            error_detail = resp.json().get("error", {}).get("message", resp.text[:200])
-        except Exception:
-            error_detail = resp.text[:200]
-        raise Exception(f"Gemini generation error {resp.status_code}: {error_detail}")
-
-    data = resp.json()
-    try:
-        return data["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError):
-        return "No response generated."
-
-
 def make_gemini_generate(prompt: str) -> str:
-    """Generate text using Gemini with automatic model fallback and quota retry."""
-    if not GEMINI_API_KEY:
-        raise Exception("GEMINI_API_KEY is not set")
+    """Generate text using Groq with automatic model fallback.
+    Function name kept as make_gemini_generate so all callers need zero changes.
+    """
+    if not GROQ_API_KEY:
+        raise Exception("GROQ_API_KEY is not set. Please add it to your environment variables.")
 
+    try:
+        from groq import Groq
+    except ImportError:
+        raise Exception("groq package not installed. Run: pip install groq==0.9.0")
+
+    client = Groq(api_key=GROQ_API_KEY)
     last_error = None
-    for model in GENERATION_MODELS:
-        max_retries = 2
-        for attempt in range(max_retries):
-            try:
-                result = _call_gemini_model(model, prompt)
-                return result
-            except Exception as e:
-                err_str = str(e)
-                if err_str.startswith("QUOTA_EXCEEDED:"):
-                    try:
-                        # FIX: was split(":"[1]) which is split("") — wrong!
-                        wait_secs = int(err_str.split(":")[1])
-                    except Exception:
-                        wait_secs = 20
-                    if attempt < max_retries - 1:
-                        print(f"Quota exceeded on {model}, waiting {wait_secs}s before retry...")
-                        time.sleep(wait_secs)
-                        continue
-                    else:
-                        print(f"Moving from {model} to next model after quota exhausted")
-                        last_error = f"Quota exceeded on {model}"
-                        break
-                else:
-                    last_error = err_str
-                    break
 
-    raise Exception(f"All Gemini models failed. Last error: {last_error}")
+    for model in GROQ_GENERATION_MODELS:
+        try:
+            print(f"Trying Groq model: {model}")
+            completion = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an expert software architect and developer. Provide clear, concise, and technically accurate responses. Format your response in Markdown."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.7,
+                max_tokens=2048,
+                timeout=60,
+            )
+            result = completion.choices[0].message.content
+            if not result or not result.strip():
+                raise Exception("Empty response from Groq")
+            print(f"Groq model {model} succeeded")
+            return result
+        except Exception as e:
+            err_str = str(e)
+            print(f"Groq model {model} failed: {err_str[:200]}")
+            last_error = err_str
+            # If rate limited, try next model immediately (no sleep needed, Groq is fast)
+            continue
+
+    raise Exception(f"All Groq models failed. Last error: {last_error}")
 
 
 # Pinecone Functions
@@ -340,10 +314,11 @@ def health_check():
         "status": "ok",
         "pinecone_available": PINECONE_AVAILABLE,
         "gemini_key_set": bool(GEMINI_API_KEY),
+        "groq_key_set": bool(GROQ_API_KEY),
         "pinecone_key_set": bool(PINECONE_API_KEY),
         "pinecone_index": PINECONE_INDEX,
         "pinecone_host": PINECONE_HOST,
-        "generation_models": GENERATION_MODELS,
+        "generation_models": GROQ_GENERATION_MODELS,
     }
 
 @app.get("/")
@@ -505,8 +480,10 @@ def ingest_repo(req: IngestRequest):
 def explain_code(req: ExplainRequest):
     """Explain code using RAG pipeline."""
     try:
+        if not GROQ_API_KEY:
+            raise Exception("GROQ_API_KEY is not set")
         if not GEMINI_API_KEY:
-            raise Exception("GEMINI_API_KEY is not set")
+            raise Exception("GEMINI_API_KEY is not set (required for embeddings)")
 
         query_embedding = make_gemini_embedding(req.query)
         matches = query_pinecone(query_embedding, top_k=5)
@@ -590,7 +567,7 @@ def debug_commit(req: DebugRequest):
         for fname in file_names:
             pr_summary += f"- `{fname}`\n"
 
-        if GEMINI_API_KEY and diff_str:
+        if GROQ_API_KEY and diff_str:
             try:
                 prompt = (
                     "Analyze this git commit diff and provide:\n"
@@ -619,14 +596,14 @@ def get_architecture(req: ArchitectureRequest = None):
     nodes = [
         {"id": "client", "label": "Frontend\n(Next.js)", "x": 100, "y": 200, "color": "#06b6d4"},
         {"id": "api", "label": "Backend\n(FastAPI)", "x": 400, "y": 200, "color": "#6366f1"},
-        {"id": "gemini", "label": "Google Gemini\n(Embeddings + LLM)", "x": 700, "y": 100, "color": "#f59e0b"},
+        {"id": "gemini", "label": "Gemini Embeddings\n+ Groq LLM", "x": 700, "y": 100, "color": "#f59e0b"},
         {"id": "pinecone", "label": "Pinecone\n(Vector DB)", "x": 700, "y": 300, "color": "#10b981"},
         {"id": "github", "label": "GitHub\n(Source Repos)", "x": 100, "y": 50, "color": "#8b5cf6"},
     ]
 
     edges = [
         {"from": "client", "to": "api", "label": "REST API"},
-        {"from": "api", "to": "gemini", "label": "Embeddings & Generation"},
+        {"from": "api", "to": "gemini", "label": "Embeddings (Gemini) & Generation (Groq)"},
         {"from": "api", "to": "pinecone", "label": "Vector Upsert / Search"},
         {"from": "github", "to": "api", "label": "Repo Download"},
         {"from": "client", "to": "github", "label": "Commit URL"},
