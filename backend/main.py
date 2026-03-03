@@ -6,6 +6,7 @@ import zipfile
 import shutil
 import tempfile
 import traceback
+import re
 from typing import List, Dict, Any
 from urllib.parse import urlparse
 
@@ -85,9 +86,9 @@ UPSERT_BATCH = 100
 
 # Generation models ordered by free-tier quota (most -> least)
 GENERATION_MODELS = [
-    "gemini-1.5-flash",       # Primary: 1500 req/day free
-    "gemini-1.5-flash-8b",    # Fallback 1: very generous free quota
-    "gemini-2.0-flash",       # Fallback 2: original model
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b",
+    "gemini-2.0-flash",
 ]
 
 # Text Splitter
@@ -116,54 +117,41 @@ def parse_github_repo(url: str):
 
 
 def make_gemini_embedding(text: str) -> list:
-    """
-    Generate a 3072-dim embedding using Gemini gemini-embedding-001 REST API.
-    """
+    """Generate a 3072-dim embedding using Gemini gemini-embedding-001 REST API."""
     if not text or not text.strip():
         return None
-
     if not GEMINI_API_KEY:
         raise Exception("GEMINI_API_KEY is not set")
 
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent"
     params = {"key": GEMINI_API_KEY}
     headers = {"Content-Type": "application/json"}
-
     body = {
         "model": "models/gemini-embedding-001",
-        "content": {
-            "parts": [{"text": text}]
-        },
+        "content": {"parts": [{"text": text}]},
         "outputDimensionality": EMBED_DIM
     }
 
     try:
         resp = requests.post(url, headers=headers, params=params, json=body, timeout=30)
-
         if resp.status_code != 200:
             error_detail = ""
             try:
                 error_detail = resp.json().get("error", {}).get("message", resp.text)
-            except:
+            except Exception:
                 error_detail = resp.text
             raise Exception(f"Gemini API error {resp.status_code}: {error_detail}")
 
         data = resp.json()
         vec = data.get("embedding", {}).get("values", [])
-
         if not vec:
             raise Exception("Empty embedding returned from Gemini")
-
         vec = [float(x) for x in vec]
-
-        # Ensure exactly 3072 dimensions
         if len(vec) > EMBED_DIM:
             vec = vec[:EMBED_DIM]
         elif len(vec) < EMBED_DIM:
             vec = vec + [0.0] * (EMBED_DIM - len(vec))
-
         return vec
-
     except requests.exceptions.Timeout:
         raise Exception("Gemini API request timed out")
     except Exception as e:
@@ -175,27 +163,21 @@ def _call_gemini_model(model: str, prompt: str) -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     params = {"key": GEMINI_API_KEY}
     headers = {"Content-Type": "application/json"}
-
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.7,
-            "maxOutputTokens": 2048
-        }
+        "generationConfig": {"temperature": 0.7, "maxOutputTokens": 2048}
     }
 
     resp = requests.post(url, headers=headers, params=params, json=body, timeout=60)
 
     if resp.status_code == 429:
-        # Parse retry-after seconds from error message if available
         wait_secs = 20
         try:
             msg = resp.json().get("error", {}).get("message", "")
-            import re
             match = re.search(r"retry in (\d+(?:\.\d+)?)s", msg, re.IGNORECASE)
             if match:
                 wait_secs = int(float(match.group(1))) + 1
-        except:
+        except Exception:
             pass
         raise Exception(f"QUOTA_EXCEEDED:{wait_secs}")
 
@@ -203,7 +185,7 @@ def _call_gemini_model(model: str, prompt: str) -> str:
         error_detail = ""
         try:
             error_detail = resp.json().get("error", {}).get("message", resp.text[:200])
-        except:
+        except Exception:
             error_detail = resp.text[:200]
         raise Exception(f"Gemini generation error {resp.status_code}: {error_detail}")
 
@@ -215,10 +197,7 @@ def _call_gemini_model(model: str, prompt: str) -> str:
 
 
 def make_gemini_generate(prompt: str) -> str:
-    """
-    Generate text using Gemini with automatic model fallback and quota retry.
-    Order: gemini-1.5-flash -> gemini-1.5-flash-8b -> gemini-2.0-flash
-    """
+    """Generate text using Gemini with automatic model fallback and quota retry."""
     if not GEMINI_API_KEY:
         raise Exception("GEMINI_API_KEY is not set")
 
@@ -233,15 +212,15 @@ def make_gemini_generate(prompt: str) -> str:
                 err_str = str(e)
                 if err_str.startswith("QUOTA_EXCEEDED:"):
                     try:
-                        wait_secs = int(err_str.split(":")[1])
-                    except:
+                        wait_secs = int(err_str.split(":"[1]))
+                    except Exception:
                         wait_secs = 20
                     if attempt < max_retries - 1:
-                        print(f"⏳ Quota exceeded on {model}, waiting {wait_secs}s before retry...")
+                        print(f"Quota exceeded on {model}, waiting {wait_secs}s before retry...")
                         time.sleep(wait_secs)
                         continue
                     else:
-                        print(f"⚠️ Moving from {model} to next model after quota exhausted")
+                        print(f"Moving from {model} to next model after quota exhausted")
                         last_error = f"Quota exceeded on {model}"
                         break
                 else:
@@ -255,11 +234,10 @@ def make_gemini_generate(prompt: str) -> str:
 try:
     from pinecone import Pinecone as PineconeClient
     PINECONE_AVAILABLE = True
-    print("✅ Pinecone SDK loaded (v3+)")
+    print("Pinecone SDK loaded (v3+)")
 except ImportError:
     PINECONE_AVAILABLE = False
-    print("⚠️ Pinecone SDK not available")
-
+    print("Pinecone SDK not available")
 
 def get_pinecone_index():
     """Get Pinecone index object."""
@@ -269,20 +247,16 @@ def get_pinecone_index():
         raise Exception("PINECONE_API_KEY not set")
     if not PINECONE_INDEX:
         raise Exception("PINECONE_INDEX not set")
-
     pc = PineconeClient(api_key=PINECONE_API_KEY)
-
     if PINECONE_HOST:
         return pc.Index(host=PINECONE_HOST)
     else:
         return pc.Index(PINECONE_INDEX)
 
-
 def upsert_to_pinecone(vectors: List[dict]):
     """Upsert vectors to Pinecone."""
     index = get_pinecone_index()
     index.upsert(vectors=vectors)
-
 
 def query_pinecone(query_embedding: list, top_k: int = 5) -> List[dict]:
     """Query Pinecone for similar chunks."""
@@ -325,10 +299,11 @@ def ingest_repo(req: IngestRequest):
     """Ingest a GitHub repository into Pinecone."""
     logs = []
     chunks_count = 0
+    tmpdir = None
 
     try:
-        logs.append(f"🔎 Starting ingestion for {req.repo_url}")
-        logs.append(f"ℹ️ Using gemini-embedding-001 (3072-dim). Ensure your Pinecone index dimension is 3072.")
+        logs.append(f"Starting ingestion for {req.repo_url}")
+        logs.append("Using gemini-embedding-001 (3072-dim). Ensure your Pinecone index dimension is 3072.")
 
         parsed = parse_github_repo(req.repo_url)
         if not parsed:
@@ -336,36 +311,32 @@ def ingest_repo(req: IngestRequest):
 
         owner, repo = parsed
         zip_url = f"https://api.github.com/repos/{owner}/{repo}/zipball"
-        logs.append(f"📦 Downloading from {zip_url}")
+        logs.append(f"Downloading from {zip_url}")
 
-        # Download repo
-        headers = {"User-Agent": "InnovateBHARAT/1.0"}
-        with requests.get(zip_url, stream=True, timeout=120, headers=headers) as r:
+        req_headers = {"User-Agent": "InnovateBHARAT/1.0"}
+        tmpdir = tempfile.mkdtemp(prefix="ingest_")
+        zpath = os.path.join(tmpdir, "repo.zip")
+        downloaded_size = 0
+
+        with requests.get(zip_url, stream=True, timeout=120, headers=req_headers) as r:
             if r.status_code == 404:
                 raise Exception(f"Repository not found or is private: {req.repo_url}")
             if r.status_code != 200:
                 raise Exception(f"Download failed with status {r.status_code}")
-
-            tmpdir = tempfile.mkdtemp(prefix="ingest_")
-            zpath = os.path.join(tmpdir, "repo.zip")
-            downloaded_size = 0
-
             with open(zpath, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
                         downloaded_size += len(chunk)
 
-        logs.append(f"✅ Downloaded {downloaded_size / (1024*1024):.1f} MB")
+        logs.append(f"Downloaded {downloaded_size / (1024*1024):.1f} MB")
 
-        # Extract
         extract_dir = os.path.join(tmpdir, "extracted")
         os.makedirs(extract_dir, exist_ok=True)
         with zipfile.ZipFile(zpath, 'r') as z:
             z.extractall(extract_dir)
-        logs.append("✅ Extracted")
+        logs.append("Extracted")
 
-        # Find code files
         file_entries = []
         for root_dir, _, files in os.walk(extract_dir):
             for fname in files:
@@ -378,7 +349,7 @@ def ingest_repo(req: IngestRequest):
                     rel_path = os.path.relpath(abs_path, extract_dir)
                     file_entries.append((abs_path, rel_path))
 
-        logs.append(f"📄 Found {len(file_entries)} files")
+        logs.append(f"Found {len(file_entries)} files")
 
         if not file_entries:
             raise Exception("No supported code files found in repository")
@@ -391,7 +362,7 @@ def ingest_repo(req: IngestRequest):
                 with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
                     text = f.read()
             except Exception as e:
-                logs.append(f"⚠️ Skipping {rel_path}: {e}")
+                logs.append(f"Skipping {rel_path}: {e}")
                 continue
 
             if not text.strip():
@@ -423,7 +394,7 @@ def ingest_repo(req: IngestRequest):
 
                     if len(upsert_buffer) >= UPSERT_BATCH:
                         upsert_to_pinecone(upsert_buffer)
-                        logs.append(f"⤴️ Upserted batch of {len(upsert_buffer)} chunks")
+                        logs.append(f"Upserted batch of {len(upsert_buffer)} chunks")
                         upsert_buffer = []
 
                     time.sleep(EMBED_DELAY)
@@ -431,26 +402,27 @@ def ingest_repo(req: IngestRequest):
                 except Exception as e:
                     failed_embeds += 1
                     if failed_embeds <= 3:
-                        logs.append(f"⚠️ Embed failed for {rel_path} chunk {i}: {str(e)[:100]}")
+                        logs.append(f"Embed failed for {rel_path} chunk {i}: {str(e)[:100]}")
                     continue
 
         if upsert_buffer:
             upsert_to_pinecone(upsert_buffer)
-            logs.append(f"⤴️ Final upsert: {len(upsert_buffer)} chunks")
+            logs.append(f"Final upsert: {len(upsert_buffer)} chunks")
 
         try:
-            shutil.rmtree(tmpdir)
+            if tmpdir:
+                shutil.rmtree(tmpdir)
         except Exception:
             pass
 
         if failed_embeds > 0:
-            logs.append(f"⚠️ {failed_embeds} chunks failed to embed")
+            logs.append(f"{failed_embeds} chunks failed to embed")
 
-        logs.append(f"🎉 Done! {chunks_count} chunks ingested successfully")
+        logs.append(f"Done! {chunks_count} chunks ingested successfully")
         return IngestResponse(status="success", logs=logs, chunks_ingested=chunks_count)
 
     except Exception as e:
-        logs.append(f"❌ Fatal error: {str(e)}")
+        logs.append(f"Fatal error: {str(e)}")
         raise HTTPException(status_code=500, detail={"logs": logs, "error": str(e)})
 
 
@@ -479,21 +451,16 @@ def explain_code(req: ExplainRequest):
 
         context = "\n\n".join(context_parts) if context_parts else "No relevant code found in the indexed repository."
 
-        prompt = f"""
-You are an expert software architect analyzing a codebase.
-
-User Query: {req.query}
-
-Relevant Code Context:
-{context}
-
-Please provide:
-1. A clear explanation of what this code does
-2. **Architectural Warnings** - any potential issues or risks
-3. System-wide impacts - how changes here might affect other parts
-
-Format your response in Markdown.
-"""
+        prompt = (
+            "You are an expert software architect analyzing a codebase.\n\n"
+            f"User Query: {req.query}\n\n"
+            f"Relevant Code Context:\n{context}\n\n"
+            "Please provide:\n"
+            "1. A clear explanation of what this code does\n"
+            "2. **Architectural Warnings** - any potential issues or risks\n"
+            "3. System-wide impacts - how changes here might affect other parts\n\n"
+            "Format your response in Markdown."
+        )
 
         answer = make_gemini_generate(prompt)
         return ExplainResponse(answer=answer)
@@ -519,15 +486,15 @@ def debug_commit(req: DebugRequest):
         owner = parts[commit_idx - 2]
         repo = parts[commit_idx - 1]
 
-        headers = {"User-Agent": "InnovateBHARAT/1.0"}
+        req_headers = {"User-Agent": "InnovateBHARAT/1.0"}
         resp = requests.get(
             f"https://api.github.com/repos/{owner}/{repo}/commits/{commit_sha}",
-            headers=headers,
+            headers=req_headers,
             timeout=30
         )
 
         if resp.status_code == 404:
-            raise Exception(f"Commit not found or repository is private")
+            raise Exception("Commit not found or repository is private")
         if resp.status_code != 200:
             raise Exception(f"GitHub API error: {resp.status_code}")
 
@@ -549,15 +516,14 @@ def debug_commit(req: DebugRequest):
 
         if GEMINI_API_KEY and diff_str:
             try:
-                prompt = f"""
-Analyze this git commit diff and provide:
-1. A concise PR summary (2-3 sentences)
-2. Potential blast radius - which other parts of the system might be affected
-
-Diff:
-{diff_str[:2000]}"""
+                prompt = (
+                    "Analyze this git commit diff and provide:\n"
+                    "1. A concise PR summary (2-3 sentences)\n"
+                    "2. Potential blast radius - which other parts of the system might be affected\n\n"
+                    f"Diff:\n{diff_str[:2000]}"
+                )
                 ai_summary = make_gemini_generate(prompt)
-                pr_summary += f"\n\n**AI Analysis:**\n{{ai_summary}}"
+                pr_summary += f"\n\n**AI Analysis:**\n{ai_summary}"
             except Exception as e:
                 pr_summary += f"\n\n_AI analysis unavailable: {str(e)}_"
 
