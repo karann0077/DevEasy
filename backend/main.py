@@ -225,7 +225,7 @@ def make_gemini_generate(prompt: str) -> str:
     try:
         from groq import Groq
     except ImportError:
-        raise Exception("groq package not installed. Run: pip install groq==0.9.0")
+        raise Exception("groq package not installed. Run: pip install groq")
 
     client = Groq(api_key=GROQ_API_KEY)
     last_error = None
@@ -247,7 +247,6 @@ def make_gemini_generate(prompt: str) -> str:
                 ],
                 temperature=0.7,
                 max_tokens=2048,
-                timeout=60,
             )
             result = completion.choices[0].message.content
             if not result or not result.strip():
