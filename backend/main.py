@@ -77,12 +77,17 @@ print(f"PINECONE_HOST: {PINECONE_HOST}")
 print(f"PINECONE_INDEX: {PINECONE_INDEX}")
 
 # Constants
-ALLOWED_EXT = {".py", ".js", ".ts", ".jsx", ".tsx", ".cpp", ".c", ".h", ".md", ".json", ".yaml", ".yml", ".html", ".css"}
-CHUNK_SIZE = 1200
-CHUNK_OVERLAP = 200
+# FIX: Reduced to high-value code file types only (removes JSON/YAML/HTML/CSS/C/C++ noise)
+ALLOWED_EXT = {".py", ".js", ".ts", ".jsx", ".tsx", ".md"}
+# FIX: Larger chunks = fewer total API calls during ingestion
+CHUNK_SIZE = 2000
+CHUNK_OVERLAP = 150
 EMBED_DIM = 3072
-EMBED_DELAY = 0.3
+# FIX: Delay is now between BATCHES (not individual chunks)
+EMBED_DELAY = 1.5
 UPSERT_BATCH = 100
+# FIX: Number of chunks per batchEmbedContents call (max 100, keep at 50 for safety)
+EMBED_BATCH_SIZE = 50
 
 # Generation models ordered by free-tier quota (most -> least)
 GENERATION_MODELS = [
@@ -116,8 +121,62 @@ def parse_github_repo(url: str):
         return None
 
 
+def make_gemini_embeddings_batch(texts: List[str]) -> List[list]:
+    """
+    Batch embed up to EMBED_BATCH_SIZE texts in a single API call using
+    batchEmbedContents. Returns a list of vectors in the same order as texts.
+    FIX: Replaces per-chunk make_gemini_embedding() calls during ingestion.
+    """
+    if not texts:
+        return []
+    if not GEMINI_API_KEY:
+        raise Exception("GEMINI_API_KEY is not set")
+
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents"
+    params = {"key": GEMINI_API_KEY}
+    headers = {"Content-Type": "application/json"}
+    body = {
+        "requests": [
+            {
+                "model": "models/gemini-embedding-001",
+                "content": {"parts": [{"text": t}]},
+                "outputDimensionality": EMBED_DIM
+            }
+            for t in texts
+        ]
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, params=params, json=body, timeout=60)
+        if resp.status_code == 429:
+            raise Exception("QUOTA_EXCEEDED:60")
+        if resp.status_code != 200:
+            error_detail = ""
+            try:
+                error_detail = resp.json().get("error", {}).get("message", resp.text[:300])
+            except Exception:
+                error_detail = resp.text[:300]
+            raise Exception(f"Gemini batch embed error {resp.status_code}: {error_detail}")
+
+        data = resp.json()
+        results = []
+        for emb in data.get("embeddings", []):
+            vec = emb.get("values", [])
+            vec = [float(x) for x in vec]
+            if len(vec) > EMBED_DIM:
+                vec = vec[:EMBED_DIM]
+            elif len(vec) < EMBED_DIM:
+                vec = vec + [0.0] * (EMBED_DIM - len(vec))
+            results.append(vec if vec else None)
+        return results
+    except requests.exceptions.Timeout:
+        raise Exception("Gemini batch embed request timed out")
+    except Exception as e:
+        raise
+
+
 def make_gemini_embedding(text: str) -> list:
-    """Generate a 3072-dim embedding using Gemini gemini-embedding-001 REST API."""
+    """Generate a single 3072-dim embedding. Used for query-time (not ingestion)."""
     if not text or not text.strip():
         return None
     if not GEMINI_API_KEY:
@@ -212,7 +271,8 @@ def make_gemini_generate(prompt: str) -> str:
                 err_str = str(e)
                 if err_str.startswith("QUOTA_EXCEEDED:"):
                     try:
-                        wait_secs = int(err_str.split(":"[1]))
+                        # FIX: was split(":"[1]) which is split("") — wrong!
+                        wait_secs = int(err_str.split(":")[1])
                     except Exception:
                         wait_secs = 20
                     if attempt < max_retries - 1:
@@ -303,7 +363,7 @@ def ingest_repo(req: IngestRequest):
 
     try:
         logs.append(f"Starting ingestion for {req.repo_url}")
-        logs.append("Using gemini-embedding-001 (3072-dim). Ensure your Pinecone index dimension is 3072.")
+        logs.append("Using gemini-embedding-001 (3072-dim) with batch embedding. Ensure your Pinecone index dimension is 3072.")
 
         parsed = parse_github_repo(req.repo_url)
         if not parsed:
@@ -349,14 +409,14 @@ def ingest_repo(req: IngestRequest):
                     rel_path = os.path.relpath(abs_path, extract_dir)
                     file_entries.append((abs_path, rel_path))
 
-        logs.append(f"Found {len(file_entries)} files")
+        logs.append(f"Found {len(file_entries)} files to process")
 
         if not file_entries:
             raise Exception("No supported code files found in repository")
 
-        upsert_buffer = []
-        failed_embeds = 0
-
+        # FIX: Collect ALL chunks first, then embed in batches
+        # This replaces the old per-chunk embedding loop which blew through quota
+        all_chunks = []  # list of (rel_path, chunk_index, chunk_text)
         for abs_path, rel_path in file_entries:
             try:
                 with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
@@ -369,42 +429,57 @@ def ingest_repo(req: IngestRequest):
                 continue
 
             chunks = text_splitter.split_text(text)
-
             for i, chunk in enumerate(chunks):
-                if not chunk.strip():
-                    continue
+                if chunk.strip():
+                    all_chunks.append((rel_path, i, chunk))
 
-                try:
-                    vec = make_gemini_embedding(chunk)
-                    if not vec:
-                        continue
+        logs.append(f"Total chunks to embed: {len(all_chunks)} (in batches of {EMBED_BATCH_SIZE})")
 
-                    upsert_buffer.append({
-                        "id": str(uuid.uuid4()),
-                        "values": vec,
-                        "metadata": {
-                            "repo": repo,
-                            "repo_url": req.repo_url,
-                            "path": rel_path,
-                            "chunk_index": i,
-                            "text": chunk[:500]
-                        }
-                    })
-                    chunks_count += 1
+        upsert_buffer = []
+        failed_embeds = 0
+        total_batches = (len(all_chunks) + EMBED_BATCH_SIZE - 1) // EMBED_BATCH_SIZE
 
-                    if len(upsert_buffer) >= UPSERT_BATCH:
-                        upsert_to_pinecone(upsert_buffer)
-                        logs.append(f"Upserted batch of {len(upsert_buffer)} chunks")
-                        upsert_buffer = []
+        for batch_num, batch_start in enumerate(range(0, len(all_chunks), EMBED_BATCH_SIZE)):
+            batch = all_chunks[batch_start:batch_start + EMBED_BATCH_SIZE]
+            texts = [c[2] for c in batch]
 
-                    time.sleep(EMBED_DELAY)
+            try:
+                vecs = make_gemini_embeddings_batch(texts)
+            except Exception as e:
+                err_str = str(e)
+                failed_embeds += len(batch)
+                logs.append(f"Batch {batch_num + 1}/{total_batches} failed: {err_str[:120]}")
+                if "QUOTA_EXCEEDED" in err_str:
+                    logs.append("Quota hit — waiting 60s before continuing...")
+                    time.sleep(60)
+                continue
 
-                except Exception as e:
+            for (rel_path, chunk_idx, chunk_text), vec in zip(batch, vecs):
+                if not vec:
                     failed_embeds += 1
-                    if failed_embeds <= 3:
-                        logs.append(f"Embed failed for {rel_path} chunk {i}: {str(e)[:100]}")
                     continue
+                upsert_buffer.append({
+                    "id": str(uuid.uuid4()),
+                    "values": vec,
+                    "metadata": {
+                        "repo": repo,
+                        "repo_url": req.repo_url,
+                        "path": rel_path,
+                        "chunk_index": chunk_idx,
+                        "text": chunk_text[:500]
+                    }
+                })
+                chunks_count += 1
 
+            if len(upsert_buffer) >= UPSERT_BATCH:
+                upsert_to_pinecone(upsert_buffer)
+                logs.append(f"Upserted {chunks_count} chunks so far...")
+                upsert_buffer = []
+
+            # Respectful delay between batch API calls
+            time.sleep(EMBED_DELAY)
+
+        # Final upsert for remaining buffer
         if upsert_buffer:
             upsert_to_pinecone(upsert_buffer)
             logs.append(f"Final upsert: {len(upsert_buffer)} chunks")
@@ -416,7 +491,7 @@ def ingest_repo(req: IngestRequest):
             pass
 
         if failed_embeds > 0:
-            logs.append(f"{failed_embeds} chunks failed to embed")
+            logs.append(f"Warning: {failed_embeds} chunks failed to embed")
 
         logs.append(f"Done! {chunks_count} chunks ingested successfully")
         return IngestResponse(status="success", logs=logs, chunks_ingested=chunks_count)
@@ -510,9 +585,10 @@ def debug_commit(req: DebugRequest):
                 diff_lines.append(patch[:1000])
         diff_str = "\n".join(diff_lines)
 
-        pr_summary = f"**Commit:** `{{commit_sha[:8]}}`\n\n**Changed Files ({len(file_names)}):**\n"
+        # FIX: was broken f-string with escaped braces {commit_sha[:8]}
+        pr_summary = f"**Commit:** `{commit_sha[:8]}`\n\n**Changed Files ({len(file_names)}):**\n"
         for fname in file_names:
-            pr_summary += f"- `{{fname}}`\n"
+            pr_summary += f"- `{fname}`\n"
 
         if GEMINI_API_KEY and diff_str:
             try:
