@@ -216,26 +216,26 @@ def make_gemini_embedding(text: str) -> list:
 
 
 def make_gemini_generate(prompt: str) -> str:
-    """Generate text using Groq with automatic model fallback.
+    """Generate text using Groq REST API (no SDK) with automatic model fallback.
+    Uses direct HTTP calls to avoid Groq SDK proxy/version issues on Render.
     Function name kept as make_gemini_generate so all callers need zero changes.
     """
     if not GROQ_API_KEY:
         raise Exception("GROQ_API_KEY is not set. Please add it to your environment variables.")
 
-    try:
-        from groq import Groq
-    except ImportError:
-        raise Exception("groq package not installed. Run: pip install groq")
-
-    client = Groq(api_key=GROQ_API_KEY)
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
     last_error = None
 
     for model in GROQ_GENERATION_MODELS:
         try:
             print(f"Trying Groq model: {model}")
-            completion = client.chat.completions.create(
-                model=model,
-                messages=[
+            body = {
+                "model": model,
+                "messages": [
                     {
                         "role": "system",
                         "content": "You are an expert software architect and developer. Provide clear, concise, and technically accurate responses. Format your response in Markdown."
@@ -245,19 +245,50 @@ def make_gemini_generate(prompt: str) -> str:
                         "content": prompt
                     }
                 ],
-                temperature=0.7,
-                max_tokens=2048,
-            )
-            result = completion.choices[0].message.content
+                "temperature": 0.7,
+                "max_tokens": 2048,
+            }
+            resp = requests.post(url, headers=headers, json=body, timeout=60)
+
+            if resp.status_code == 429:
+                print(f"Groq model {model} rate limited, trying next model...")
+                last_error = f"Rate limited on {model}"
+                continue
+
+            if resp.status_code == 401:
+                raise Exception("GROQ_API_KEY is invalid or expired")
+
+            if resp.status_code != 200:
+                error_detail = ""
+                try:
+                    error_detail = resp.json().get("error", {}).get("message", resp.text[:300])
+                except Exception:
+                    error_detail = resp.text[:300]
+                raise Exception(f"Groq API error {resp.status_code}: {error_detail}")
+
+            data = resp.json()
+            try:
+                result = data["choices"][0]["message"]["content"]
+            except (KeyError, IndexError):
+                raise Exception("Unexpected Groq response format")
+
             if not result or not result.strip():
                 raise Exception("Empty response from Groq")
+
             print(f"Groq model {model} succeeded")
             return result
+
+        except requests.exceptions.Timeout:
+            print(f"Groq model {model} timed out, trying next...")
+            last_error = f"Timeout on {model}"
+            continue
         except Exception as e:
             err_str = str(e)
             print(f"Groq model {model} failed: {err_str[:200]}")
             last_error = err_str
-            # If rate limited, try next model immediately (no sleep needed, Groq is fast)
+            # Don't continue on auth errors
+            if "invalid or expired" in err_str:
+                break
             continue
 
     raise Exception(f"All Groq models failed. Last error: {last_error}")
