@@ -27,9 +27,10 @@ export default function Sidebar({ children }: { children: React.ReactNode }) {
     if (!repoUrl.trim() || syncing) return;
     setSyncing(true);
     setSyncMsg("");
+    // Save immediately so explorer page shows the repo while ingestion runs
+    localStorage.setItem("synced_repo_url", repoUrl);
     try {
-      await apiFetch("/api/ingest", { method: "POST", body: JSON.stringify({ repo_url: repoUrl }) }, 120000);
-      localStorage.setItem("synced_repo_url", repoUrl);
+      await apiFetch("/api/ingest", { method: "POST", body: JSON.stringify({ repo_url: repoUrl }) }, 300000);
       setSyncMsg("Synced!");
       setTimeout(() => setSyncMsg(""), 3000);
     } catch (e: unknown) {

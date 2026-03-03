@@ -6,7 +6,7 @@ export const getApiBaseUrl = () =>
 export async function apiFetch<T = any>(
   path: string,
   options?: RequestInit,
-  timeoutMs = 30000
+  timeoutMs = 90000
 ): Promise<T> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
